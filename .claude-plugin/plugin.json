@@ -1,0 +1,6 @@
+{
+  "name": "delve",
+  "version": "0.2.0",
+  "types": "./types/index.d.ts",
+  "description": "Pixel-art roguelite dungeon crawl that runs beside Claude Code"
+}

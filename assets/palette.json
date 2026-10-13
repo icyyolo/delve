@@ -1,0 +1,22 @@
+{
+  "name": "Sweetie 16 (GrafxKid, free to use)",
+  "transparent": ".",
+  "colors": {
+    "k": { "hex": "#1a1c2c", "use": "outline / near-black" },
+    "p": { "hex": "#5d275d", "use": "deep purple, shadow of reds" },
+    "r": { "hex": "#b13e53", "use": "red, blood, hearts" },
+    "o": { "hex": "#ef7d57", "use": "orange, fire, skin shadow" },
+    "y": { "hex": "#ffcd75", "use": "yellow, gold, skin, flame core" },
+    "l": { "hex": "#a7f070", "use": "lime, highlight of greens" },
+    "g": { "hex": "#38b764", "use": "green" },
+    "t": { "hex": "#257179", "use": "teal, shadow of greens/cyans" },
+    "n": { "hex": "#29366f", "use": "navy, deep shadow" },
+    "b": { "hex": "#3b5dc9", "use": "blue" },
+    "s": { "hex": "#41a6f6", "use": "sky blue" },
+    "c": { "hex": "#73eff7", "use": "cyan, magic, energy glow" },
+    "w": { "hex": "#f4f4f4", "use": "white, specular, bone highlight" },
+    "e": { "hex": "#94b0c2", "use": "light grey, steel, bone" },
+    "m": { "hex": "#566c86", "use": "mid grey, stone" },
+    "d": { "hex": "#333c57", "use": "dark slate, stone shadow" }
+  }
+}

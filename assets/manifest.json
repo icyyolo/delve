@@ -1,0 +1,46 @@
+{
+  "size": 16,
+  "groups": {
+    "hero": {
+      "kind": "actor",
+      "sprites": {
+        "warrior_idle": 2,
+        "warrior_attack": 2,
+        "warrior_hurt": 1,
+        "warrior_dead": 1,
+        "warrior_farm": 2
+      }
+    },
+    "monsters": {
+      "kind": "actor",
+      "sprites": {
+        "slime_idle": 2, "slime_hurt": 1,
+        "bat_idle": 2, "bat_hurt": 1,
+        "skeleton_idle": 2, "skeleton_hurt": 1,
+        "wraith_idle": 2, "wraith_hurt": 1,
+        "golem_idle": 2, "golem_hurt": 1,
+        "mimic_idle": 2, "mimic_hurt": 1
+      }
+    },
+    "tiles": {
+      "kind": "tile",
+      "props": ["crypt_torch", "crypt_chest_closed", "crypt_chest_open", "caverns_torch", "caverns_chest_closed", "caverns_chest_open"],
+      "sprites": {
+        "crypt_floor": 1, "crypt_wall": 1, "crypt_wall_alt": 1, "crypt_door": 1, "crypt_stairs": 1,
+        "crypt_torch": 2, "crypt_chest_closed": 1, "crypt_chest_open": 1,
+        "caverns_floor": 1, "caverns_wall": 1, "caverns_wall_alt": 1, "caverns_door": 1, "caverns_stairs": 1,
+        "caverns_torch": 2, "caverns_chest_closed": 1, "caverns_chest_open": 1
+      }
+    },
+    "items": {
+      "kind": "icon",
+      "sprites": {
+        "heart_full": 1, "heart_half": 1, "heart_empty": 1,
+        "energy": 1, "potion_red": 1, "potion_blue": 1,
+        "sword": 1, "shield": 1, "coin": 2, "gem_xp": 1,
+        "loot_bag": 2, "key": 1, "scroll": 1, "torch_icon": 1,
+        "skull": 1, "star": 1
+      }
+    }
+  }
+}

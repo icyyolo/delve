@@ -1,0 +1,6 @@
+# API types Claude Code generates each time the mod loads (machine-specific, ~14k lines)
+.claude-plugin/types/
+
+node_modules/
+.DS_Store
+Thumbs.db
