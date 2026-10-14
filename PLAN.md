@@ -74,7 +74,7 @@ Claude Code (fun first, focus later). Plugin name: `delve` (plugin names may not
 - One active dungeon; other sessions feed energy/loot into it.
 
 **Flavor text**
-- Haiku (`$.model.complete({ model: "haiku" })`) line per room/monster, cap 200 calls/day (flavor + shop),
+- Haiku (`$.model.complete({ model: "haiku" })`) line per room/monster, cap 200 calls/day (flavor + shop), `/delve haiku off` stops them,
   hand-written table fallback on timeout/cap.
 - Built (`hooks/flavor.ts`): room = floor + monster. Line asked on session start, each kill (new floor)
   and New run; 4 s timeout; first line of reply, quotes stripped, <= 120 chars, else table (3 lines per
@@ -136,3 +136,4 @@ Claude Code (fun first, focus later). Plugin name: `delve` (plugin names may not
 - 2026-10-13: Checkpoint 12 (user ask: "UI has too many words, make it a 2D minigame"; user said implement all proposed). scene.ts: 3x5 pixel font, mini icons (hearts, coin, star, torch, 5 weapons), HUD rim, HP bars with drain, popups, slash, puff, coin fly, banners, frozen filter + fuse, YOU FELL, tooltips, hover brighten; questsSvg, shopSvg; hudSvg removed. BIOME_NAME + LOOT_NAME moved to scene.ts. register.tsx: pane = scene Svg, one text line (noteLine: notes, ambush, death; plain hits/kills now only drawn), hotkey Buttons, quests Svg, shop Svg + pitch + Buy buttons. Tests: moved-text checks now read Svg alt (`pictured`); added: plain hit leaves no text line, Attack hotkey "a", frozen filter + full 300 s fuse, fullest HUD/kill/frozen/quest/shop sizes under the limit (biggest scene 91k chars of 131k). 40 tests pass, tsc clean, validate passed. Gallery (13 states, SMIL paused at set times) screenshotted; empty hearts recoloured grey after the first shot (invisible on the HUD). Energy pips not drawn: the pane must not read the purse (tool calls would redraw it). Loot buttons over the sprites skipped: Box offsets are character cells, cannot line up with pixel sprites.
 - 2026-10-14: Haiku daily cap lowered 10,000 -> 200 (user ask; normal play makes dozens of calls a day, past the cap the tables answer).
 - 2026-10-14: Marketplace: `.claude-plugin/marketplace.json` in the GitHub repo (owner icyyolo, source "./"); README install is `/plugin install delve --marketplace icyyolo/delve`, source checkout kept as the dev path.
+- 2026-10-14: `/delve haiku [on|off]` (user ask: toggle so the game spends no tokens). Bare `/delve haiku` flips; stored as `haikuOn` (default on) like `enabled`; askHaiku returns undefined first when off, so flavor uses the table and the shop rolls dice. Tests: toggle flips/stores, off = no model call on kill or shop (42 pass).

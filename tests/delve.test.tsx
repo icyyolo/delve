@@ -497,6 +497,40 @@ describe('flavor lines', () => {
     expect(TABLE[(state.run as Run).monster.kind]).toContain(flavorOf(state)?.text)
     await ui.unmount()
   })
+
+  test('/delve haiku flips the switch and stores it; on and off set it', async ($, on) => {
+    const stored: Record<string, unknown> = {}
+    const writes: unknown[] = []
+    on('store.get', (_$, e) => ({ value: stored[e.key] }))
+    on('store.set', (_$, e) => {
+      stored[e.key] = e.value
+      writes.push(e.value)
+      return { value: undefined }
+    })
+    const haiku = async (args: string) => (await $.command.run({ ...RUN, command: 'delve', args })).text
+    expect(await haiku('haiku')).toMatch(/Haiku lines off/)
+    expect(await haiku('haiku')).toMatch(/Haiku lines on/)
+    expect(await haiku('haiku off')).toMatch(/off/)
+    expect(await haiku('haiku off')).toMatch(/off/)
+    expect(await haiku('haiku sideways')).toMatch(/Usage/)
+    expect(writes).toEqual([false, true, false, false])
+  })
+
+  test('with Haiku off, a kill and a shop restock ask no model', async ($, on) => {
+    const { state } = world(on, { ...nearKill, haikuOn: false })
+    let asked = 0
+    on('model.complete', () => {
+      asked++
+      return { value: { isAnswered: true as const, text: 'never shown', usage: USAGE } }
+    })
+    const ui = await kill($)
+    const shop = (await $.command.run({ ...RUN, command: 'delve', args: 'shop' })).text ?? ''
+
+    expect(asked).toBe(0)
+    expect(TABLE[(state.run as Run).monster.kind]).toContain(flavorOf(state)?.text)
+    expect(PITCHES.some(p => shop.includes(p))).toBe(true)
+    await ui.unmount()
+  })
 })
 
 test('meta, shop and flavor come back at session start without asking Haiku', async ($, on) => {

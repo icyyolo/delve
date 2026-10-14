@@ -85,6 +85,11 @@ async function isEnabled($: EngineInterface): Promise<boolean> {
   return (await $.store.get('enabled')) !== false
 }
 
+// `/delve haiku off` stops every model call (flavor and shop fall to their tables); stored like `off`.
+async function isHaikuOn($: EngineInterface): Promise<boolean> {
+  return (await $.store.get('haikuOn')) !== false
+}
+
 // Run and purse live in session state for drawing, and in the store to survive restarts.
 async function changeRun($: EngineInterface, fn: (r: Run) => Run): Promise<Run> {
   const r = await update($, run, fn)
@@ -338,9 +343,10 @@ async function measureTorch($: EngineInterface) {
   }
 }
 
-// One Haiku call within the daily cap: its reply's text, or undefined (capped, failed,
-// timed out, or refused) so the caller falls back to its table.
+// One Haiku call within the daily cap: its reply's text, or undefined (switched off, capped,
+// failed, timed out, or refused) so the caller falls back to its table.
 async function askHaiku($: EngineInterface, prompt: string, maxTokens: number, timeoutMs: number): Promise<string | undefined> {
+  if (!(await isHaikuOn($))) return undefined
   const day = dayOf(await $.clock.now())
   const saved = (await $.store.get('haiku')) as { day: string; count: number } | undefined
   const count = saved?.day === day ? saved.count : 0
@@ -445,7 +451,7 @@ function noteLine(r: Run): string | undefined {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'delve', description: "Claude's Depths: /delve opens the pane, /delve off turns it off, /delve shop spends XP" })
+    await $.command.register({ name: 'delve', description: "Claude's Depths: /delve opens the pane, /delve off turns it off, /delve shop spends XP, /delve haiku toggles Haiku lines" })
     await loadSaved($)
     const pause = await read($, rest)
     if (pause) await armTorch($, pause)
@@ -470,13 +476,22 @@ export const register: Register = on => {
       return { text: shopText(await currentShop($), await read($, meta), (await read($, purse)).xp) }
     }
     if (verb === 'buy' && item) return { text: await buy($, item) }
+    if (verb === 'haiku' && (item === undefined || item === 'on' || item === 'off')) {
+      const isOn = item === undefined ? !(await isHaikuOn($)) : item === 'on'
+      await $.store.set('haikuOn', isOn)
+      return {
+        text: isOn
+          ? 'Haiku lines on: flavor and shop picks use Claude Haiku (capped per day).'
+          : 'Haiku lines off: no model calls, flavor and shop use the built-in tables. /delve haiku turns them back on.',
+      }
+    }
     if (arg === 'off') {
       await $.store.set('enabled', false)
       await $.ui.close({ id: PANE })
       void $.ui.status(undefined)
       return { text: "Claude's Depths is off. /delve turns it back on." }
     }
-    if (arg !== '' && arg !== 'on') return { text: 'Usage: /delve [on|off|shop|buy <id>]' }
+    if (arg !== '' && arg !== 'on') return { text: 'Usage: /delve [on|off|shop|buy <id>|haiku [on|off]]' }
     await $.store.set('enabled', true)
     const opened = await $.ui.open({ id: PANE, title: TITLE })
     await showStatus($)

@@ -34,7 +34,8 @@ farming, frozen, torch out, ally + doppelganger, death, capped hearts, quest scr
   Claude Code 2.1.293–2.1.295. Other surfaces (terminal, IDE, mobile) show a one-line "desktop only" notice.
 - Node.js, only for the sprite tooling in `tools/`.
 - No API keys. Flavor lines and shop stock use Claude Haiku through Claude Code's own model access
-  (`$.model.complete`), capped per day, with hand-written fallbacks.
+  (`$.model.complete`), capped per day, with hand-written fallbacks. `/delve haiku off` turns the
+  calls off entirely, so the game spends no tokens.
 
 ## Install and run
 
@@ -68,6 +69,7 @@ To load a source checkout in every session, add the folder to `CLAUDE_CODE_PLUGI
 | `/delve off` | Close the pane and keep it off across restarts |
 | `/delve shop` | Turn the pane to the shop and print the wares as text |
 | `/delve buy <id>` | Buy a ware with XP, e.g. `/delve buy vitality` |
+| `/delve haiku [on\|off]` | Toggle Haiku flavor lines and shop picks; off = no model calls, built-in tables instead (kept across restarts) |
 
 ## How to play
 
@@ -158,7 +160,7 @@ run, Claude Haiku picks 3 wares and a one-line pitch (8 s timeout; dice pick if 
 | Deep dwellers | mimics and golems appear | 1 | 50 XP |
 
 **Flavor.** One Haiku line per room (4 s timeout, at most 120 characters), with 3 hand-written lines per
-monster as the fallback. Haiku calls (flavor + shop) are capped at 200 per UTC day.
+monster as the fallback. Haiku calls (flavor + shop) are capped at 200 per UTC day, and `/delve haiku off` stops them.
 
 ## How it works
 
