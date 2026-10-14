@@ -2,14 +2,18 @@ import type { On, ToolCallInput } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import type { Biome, Meta, MonsterKind, Run } from '../types'
-import { NO_META, STATS, attack, biomeFor, newRun, spawn } from '../hooks/combat'
-import { DROP_EVERY_MS, ENERGY_CAP, FARM_AFTER_MS, HAIKU_DAILY_CAP, LOOT_MS, MOMENTUM_ENERGY, REGEN_CAP, REGEN_MS, TORCH_MS } from '../hooks/register'
+import type { Biome, Meta, MonsterKind, Recap, Run } from '../types'
+import { NO_META, STATS, attack, biomeFor, counter, newRun, spawn } from '../hooks/combat'
+import { DROP_EVERY_MS, ENERGY_CAP, FARM_AFTER_MS, HAIKU_DAILY_CAP, LOOT_MS, MOMENTUM_ENERGY, DOTS_SHOWN, RECAP_DONE_XP, RECAP_ENERGY, RECAP_ENERGY_MORE, RECAP_XP, REGEN_CAP, REGEN_MS, TORCH_MS } from '../hooks/register'
+import { TLDR_ASK, fallbackKeys, fallbackLine, fileList, finishedWords, hasRound, liveScore, marks, readRecap, restLines, score, tldrOf, topLines } from '../hooks/recap'
 import { TABLE, dayOf, readLine, tableLine } from '../hooks/flavor'
 import { QUEST_GOLD, QUEST_XP, WEAPONS, allyDamage, darkness, weaponFor } from '../hooks/claude'
 import { iconSvg, questsSvg, sceneSvg, shopSvg } from '../hooks/scene'
 import { ICON, PITCHES, STOCK_SIZE, readPick } from '../hooks/shop'
 import { SPRITES } from '../hooks/sprites.gen'
+
+// The test runner's own timer, for waiting on work the mod does in the background.
+declare const setTimeout: (fn: () => void, ms: number) => unknown
 
 const PANE = {
   plugin: 'delve',
@@ -29,6 +33,11 @@ const SVG_LIMIT = 131072
 // The pictures carry what the text used to say; their alt says it for readers (and tests).
 type Mounted = { findAll: (q: { type: string }) => Promise<{ props: Record<string, unknown> }[]> }
 const pictured = async (ui: Mounted, said: RegExp) => (await ui.findAll({ type: 'Svg' })).some(svg => said.test(String(svg.props.alt)))
+// Types into the recap typer key by key, as a person does once it is clicked: '\n' is Enter, '\b' Backspace.
+type Keyed = { key: (k: { key: string; in?: string }) => Promise<void> }
+const keys = async (ui: Keyed, text: string) => {
+  for (const ch of text) await ui.key({ key: ch === '\n' ? 'return' : ch === '\b' ? 'backspace' : ch, in: 'typer' })
+}
 
 describe('pane', () => {
   test('desktop draws the scene as one interactive Svg', async $ => {
@@ -228,6 +237,14 @@ describe('combat rules', () => {
     expect(attack(dead, dice(0))).toBe(dead)
   })
 
+  test('a typo lets the monster hit back at its counter chance; the shield lowers it', () => {
+    const hit = counter(newRun(), dice(0.4))
+    expect(hit).toMatchObject({ hp: 9, last: { dealt: 0, took: 1, isEvent: true, note: 'Typo! The slime hit you for 1.' } })
+    expect(counter(newRun(), dice(0.5))).toEqual(newRun())
+    expect(counter(newRun(), dice(0.4), { ...NO_META, shield: 1 })).toEqual(newRun())
+    expect(counter({ ...newRun(), hp: 1 }, dice(0)).isDead).toBe(true)
+  })
+
   test('with the caverns bought, biomes alternate every five floors', () => {
     expect([1, 5, 6, 10, 11].map(f => biomeFor(f, { ...NO_META, caverns: 1 }))).toEqual(['crypt', 'crypt', 'caverns', 'caverns', 'crypt'])
   })
@@ -253,6 +270,25 @@ describe('Attack button', () => {
     expect(await ui.find({ type: 'Text', text: /Hit the slime/ })).toBeUndefined()
     expect((await ui.find({ type: 'Button', text: /Attack/ }))?.props.hotkey).toBe('a')
     await ui.unmount()
+  })
+
+  test('Attack and Shop share the first row, loot grabs the next; a hint says how to get the keys', async ($, on) => {
+    const { clock } = world(on)
+    await $.turn.start({ text: 'what is this?', turnId: 't1' })
+    await clock.advance(FARM_AFTER_MS)
+    const keysOf = (box: { children: unknown[] } | undefined) => (box?.children ?? []).map(c => (c as { props: { key?: string } }).props.key)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    expect(keysOf(await ui.find({ type: 'Box', key: 'actions' }))).toEqual(['attack', 'shop'])
+    const grabs = keysOf(await ui.find({ type: 'Box', key: 'loot' }))
+    expect(grabs).toHaveLength(1)
+    expect(grabs[0]).not.toBe('attack')
+    expect(await ui.find({ type: 'Text', text: /click the pane or press ctrl\+x tab/ })).toBeDefined()
+    await ui.unmount()
+
+    const focused = await $.ui.mount({ ...PANE, surface: 'desktop', props: { ...PANE.props, isFocused: true } })
+    expect(await focused.find({ type: 'Text', text: /Keys on: A attack/ })).toBeDefined()
+    await focused.unmount()
   })
 
   test('a dead hero shows New run, which starts over on floor 1', async ($, on) => {
@@ -625,6 +661,7 @@ describe("Claude's own work", () => {
   test("Claude's tool picks the weapon; a failed command drops it; MCP calls a familiar", async ($, on) => {
     // An 8-HP slime survives a sword crit, so the familiar's hit never slays it.
     const { state } = world(on, { flavor: SEEN, run: { ...newRun(), monster: { kind: 'slime', hp: 8, maxHp: 8 } } }, tools)
+    await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
     await $.turn.start({ text: 'fix it', turnId: 't1' })
     await callTool($, { tool: 'Edit', file_path: 'a.ts', old_string: 'a', new_string: 'b', tool_use_id: 'u1' })
     expect(state.weapon).toBe('sword')
@@ -811,5 +848,456 @@ describe("Claude's own work", () => {
     const board = Array.from({ length: 9 }, (_, i) => ({ id: `${i}`, text: 'A long quest line that runs past the edge of the parchment', isDone: i % 2 === 0 }))
     expect(questsSvg(board).length).toBeLessThan(SVG_LIMIT)
     expect(shopSvg(['vitality', 'deep', 'caverns'], { ...NO_META, vitality: 4, whetstone: 3, shield: 3, potion_blue: 1, loot_bag: 1 }, 5).length).toBeLessThan(SVG_LIMIT)
+  })
+})
+
+// A reply with a lead-in, code, a warning and a question.
+const LONG = [
+  'Here is what I changed:',
+  '',
+  'I fixed the login bug so that expired tokens are now refused by the server. I also added a regression test for it.',
+  '',
+  '```ts',
+  'expect(refused).toBe(true)',
+  '```',
+  '',
+  'Warning: two tests are still skipped.',
+  'Should I push now?',
+].join('\n')
+const FALLBACK = 'I fixed the login bug so that expired tokens are now refused by the server.'
+const LINE = 'Fixed the login bug and added a test for expired tokens.'
+// The recap is written in the background after the turn ends; wait for it to land.
+async function landed(state: Record<string, unknown>, after?: Recap): Promise<Recap> {
+  for (let i = 0; i < 200; i++) {
+    const r = state.recap as Recap | null | undefined
+    if (r && !r.isPending && r.id !== after?.id) return r
+    await new Promise<void>(done => setTimeout(done, 5))
+  }
+  throw new Error('the recap never landed')
+}
+
+describe('reply recap', () => {
+  test('without Haiku the line skips lead-ins and code; key points are questions and warnings', () => {
+    expect(fallbackLine(LONG)).toBe(FALLBACK)
+    expect(fallbackLine('Done.\n\nI updated `auth.ts` and src/a.ts today.\nThe build now passes on every platform.')).toBe('The build now passes on every platform.')
+    expect(fallbackKeys(LONG)).toEqual(['Warning: two tests are still skipped.', 'Should I push now?'])
+    expect(hasRound('Done.')).toBe(false)
+    expect(hasRound(LONG)).toBe(true)
+  })
+
+  test('without Haiku the line is the sentence that best stands for the reply', () => {
+    // A summary label at the end beats the opening detail.
+    const labelled = [
+      'I looked through the auth module and the session store.',
+      '',
+      'The token check compared timestamps in seconds against milliseconds.',
+      'I changed the comparison and added a regression test.',
+      '',
+      'In short: expired tokens are now rejected and the new test passes.',
+    ].join('\n')
+    expect(fallbackLine(labelled)).toBe('Expired tokens are now rejected and the new test passes.')
+
+    // A Summary heading marks the sentence under it; code-laden bullets lose.
+    const headed = ['## Changes', '- Renamed the helper in `utils.ts`.', '- Moved the config loader.', '', '## Summary', 'The build is green again after the config loader moved out of the hot path.'].join('\n')
+    expect(fallbackLine(headed)).toBe('The build is green again after the config loader moved out of the hot path.')
+
+    // A status reply: the opening result line, not the bullets or the test count.
+    const status = [
+      'Recap built and tested, but not seen in the live pane yet.',
+      '',
+      '**What it does:**',
+      '- When a turn ends, the freeze shows a line to type.',
+      '- Enter scores the round once per turn.',
+      '',
+      'All tests pass and validate passes.',
+    ].join('\n')
+    expect(fallbackLine(status)).toBe('Recap built and tested, but not seen in the live pane yet.')
+
+    // In a long reply, the sentence the rest keeps coming back to.
+    const long = [
+      'The cache layer was serving stale prices to the checkout page.',
+      'Prices are cached for ten minutes per product.',
+      'The checkout page read prices from the cache without checking the product version.',
+      'When a price changed, the old cached price stayed until it expired.',
+      'Weather data uses the same cache but never had this problem.',
+      'The fix keys each cached price by product version, so a price change misses the cache at once.',
+      'Logs from staging look clean.',
+      'Deploy whenever you like.',
+    ].join(' ')
+    expect(fallbackLine(long)).toBe('The fix keys each cached price by product version, so a price change misses the cache at once.')
+
+    // A terse fragment rides with the sentence after it instead of dropping out.
+    expect(fallbackLine('Recap built. Hot-reloads when this turn ends.\n\nNot committed, not pushed yet.')).toBe('Recap built. Hot-reloads when this turn ends.')
+
+    // Too long: cut at a clause break, not mid-thought.
+    const rambling = 'I went through every handler in the request pipeline, checked each one for the missing await on the session lookup, and found two more places where it was skipped.'
+    expect(fallbackLine(rambling)).toBe('I went through every handler in the request pipeline, checked each one for the missing await on the session lookup.')
+  })
+
+  test("Claude's TL;DR line wins as written, and stays out of the key points", () => {
+    const reply = ['I changed three files.', '', 'Warning: the old cache is still on disk.', '', '**TL;DR:** Fixed the `auth` token bug; tests pass now.'].join('\n')
+    expect(tldrOf(reply)).toBe('Fixed the token bug; tests pass now.')
+    expect(tldrOf('TL;DR - Moved the loader out of the hot path.')).toBe('Moved the loader out of the hot path.')
+    expect(tldrOf(LONG)).toBeNull()
+    expect(fallbackKeys(`${reply}\nTL;DR: did it fail? no`)).toEqual(['Warning: the old cache is still on disk.'])
+    expect(TLDR_ASK).toMatch(/TL;DR: <one plain sentence of at most 20 words/)
+  })
+
+  test('three summary lines, then the whole reply in order, nothing typed twice', () => {
+    expect(topLines(LONG, [])).toEqual([FALLBACK, 'I also added a regression test for it.', 'Warning two tests are still skipped.'])
+    expect(topLines(LONG, ['Custom first.', null])).toEqual(['Custom first.', FALLBACK, 'I also added a regression test for it.'])
+    expect(restLines(LONG, topLines(LONG, []))).toEqual(['Here is what I changed', 'Should I push now?'])
+
+    // A sentence code and paths gut is skipped; a link keeps its words; a long one splits at clause breaks.
+    const reply = [
+      'I edited `src/auth.ts` at line `42`.',
+      'See [the docs](https://example.com/tokens) for the full token rules.',
+      'I went through every handler in the request pipeline, checked each one for the missing await on the session lookup, and found two more places where it was skipped.',
+    ].join('\n')
+    expect(restLines(reply, [])).toEqual([
+      'See the docs for the full token rules.',
+      'I went through every handler in the request pipeline, checked each one for the missing await on the session lookup.',
+      'And found two more places where it was skipped.',
+    ])
+    expect(restLines(reply, ['See the docs for the full token rules'])).toHaveLength(2)
+  })
+
+  test("Haiku's recap is held to plain words; files, score and marks", () => {
+    expect(readRecap('TYPE: Fixed `auth.ts` login — now with tests!\nKEY: Run `npm test`\nKEY: none')).toEqual({ lines: ['Fixed login - now with tests!'], keys: ['Run npm test'] })
+    expect(readRecap('TYPE: One.\nTYPE: Two.\nTYPE: One.\nTYPE: Three.\nTYPE: Four.')?.lines).toEqual(['One.', 'Two.', 'Three.'])
+    expect(readRecap('Sure, here is a summary.')).toBeUndefined()
+    expect(fileList(['/x/a.ts', 'C:\\y\\b.ts', '/x/a.ts', 'c.ts', 'd.ts', 'e.ts'])).toEqual(['a.ts', 'b.ts', 'c.ts', '+2 more'])
+    expect(score('a b c d', 'a B x d', 60_000)).toEqual({ accuracy: 0.75, wpm: 1 })
+    // Letter by letter: a done word typed wrong shows which letters; the caret sits on the next one.
+    expect(marks('fix the bug', 'fix tha b')).toEqual([
+      [{ text: 'fix', mark: 'right' }],
+      [{ text: 'th', mark: 'right' }, { text: 'e', mark: 'wrong' }],
+      [{ text: 'b', mark: 'right' }, { text: 'u', mark: 'caret' }, { text: 'g', mark: 'here' }],
+    ])
+    // One slip mid-word marks that letter alone, not the rest of the word.
+    expect(marks('fix the bug', 'fix the bxg')[2]).toEqual([
+      { text: 'b', mark: 'right' },
+      { text: 'u', mark: 'wrong' },
+      { text: 'g', mark: 'right' },
+      { text: ' ', mark: 'caret' },
+    ])
+    // Letters typed past a word's end show as extra; missing ones in a done word as wrong.
+    expect(marks('fix the bug', 'fixes th bugg')).toEqual([
+      [{ text: 'fix', mark: 'right' }, { text: 'es', mark: 'extra' }],
+      [{ text: 'th', mark: 'right' }, { text: 'e', mark: 'wrong' }],
+      [{ text: 'bug', mark: 'right' }, { text: 'g', mark: 'extra' }, { text: ' ', mark: 'caret' }],
+    ])
+    expect(marks('fix the bug', '')[0]).toEqual([{ text: 'f', mark: 'caret' }, { text: 'ix', mark: 'here' }])
+    expect(marks('fix the bug', 'fix ')[1]![0]).toEqual({ text: 't', mark: 'caret' })
+  })
+
+  test('live accuracy and WPM as it is typed', () => {
+    expect(liveScore('fix the bug', 'fix', 500)).toEqual({ accuracy: null, wpm: null })
+    expect(liveScore('fix the bug', 'fix tha b', 6000)).toEqual({ accuracy: 0.5, wpm: 18 })
+  })
+
+  test('each word finished is right or wrong once; words past the line count for nothing', () => {
+    expect(finishedWords('fix the bug', '', 'fi')).toEqual([])
+    expect(finishedWords('fix the bug', 'fi', 'Fix ')).toEqual([true])
+    expect(finishedWords('fix the bug', 'fix ', 'fix tha ')).toEqual([false])
+    // A paste finishes several at once; nothing finished twice.
+    expect(finishedWords('fix the bug', '', 'fix the bug ')).toEqual([true, true, true])
+    expect(finishedWords('fix the bug', 'fix the bug ', 'fix the bug more ')).toEqual([])
+  })
+
+  test("the freeze shows Haiku's line and the key points; typing it well pays energy and XP", async ($, on) => {
+    const { clock, state, toasts } = world(on, { flavor: SEEN }, tools)
+    const asked: string[] = []
+    on('model.complete', (_$, e) => {
+      asked.push(e.prompt)
+      return { value: { isAnswered: true as const, text: `TYPE: ${LINE}\nKEY: Asks you: push now?\nKEY: Run \`npm test\``, usage: USAGE } }
+    })
+    await $.turn.start({ text: 'fix login', turnId: 't1' })
+    await callTool($, { tool: 'Edit', file_path: 'src/auth.ts', old_string: 'a', new_string: 'b', tool_use_id: 'u1' })
+    await callTool($, { tool: 'Write', file_path: 'tests/auth.test.ts', content: 'x', tool_use_id: 'u2' })
+    await $.turn.complete(end('t1', LONG))
+    await landed(state)
+    expect(asked.at(-1)).toMatch(/TYPE:[\s\S]*I fixed the login bug/)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    expect(await ui.find({ type: 'Text', text: /SUMMARY 1\/3/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /90% pays \+2 energy, 60\+ WPM \+1 XP/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Asks you: push now\?/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Run npm test/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Files changed: auth\.ts, auth\.test\.ts/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /click the words and type to attack/ })).toBeDefined()
+
+    await keys(ui, 'F')
+    await clock.advance(10_000)
+    // The last word typed right ends the line, Monkeytype's way: no Enter.
+    await keys(ui, LINE.slice(1))
+    expect(toasts.at(-1)).toBe('Line 1 typed: 100% at 67 WPM. +2 energy, +1 XP.')
+    // The words swung as they were typed: the 2 energy on hand went on the first two, the
+    // rest swung weak; the line's +2 came as it ended, and its last word spent one.
+    expect(state.purse).toEqual({ energy: 1, xp: RECAP_XP, gained: 2 })
+    expect((state.run as Run).floor).toBeGreaterThan(1)
+    // The game goes on: line 2, a summary line the reply's best sentences filled in.
+    expect(await ui.find({ type: 'Text', text: /✓ Line 1: 100% · 67 WPM · \+2 energy, \+1 XP/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /SUMMARY 2\/3/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /90% pays \+1 energy$/ })).toBeDefined()
+    expect((state.recap as Recap).lines.slice(0, 3)).toEqual([LINE, FALLBACK, 'I also added a regression test for it.'])
+    expect(await ui.find({ type: 'Client', key: 'typer' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('the game runs through the whole reply: summary lines pay energy, the rest XP once, then unpaid speed', async ($, on) => {
+    const { state, toasts } = world(on, { flavor: SEEN, haikuOn: false })
+    await $.turn.start({ text: 'fix login', turnId: 't1' })
+    await $.turn.complete(end('t1', LONG))
+    const r = await landed(state)
+    expect(r.top).toBe(3)
+    expect(r.lines.slice(3)).toEqual(['Here is what I changed', 'Should I push now?'])
+    const purse = () => (state.purse as { energy: number; xp: number } | undefined) ?? { energy: 0, xp: 0 }
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    const type = (text: string) => keys(ui, text)
+    await type(r.lines[0]!)
+    await type(r.lines[1]!)
+    expect(toasts.at(-1)).toBe('Line 2 typed: 100% at 0 WPM. +1 energy.')
+    // Each word swings as it is typed, the last one after its line pays: the pay goes on the next swings.
+    expect(purse().energy).toBe(0)
+    const floor = (state.run as Run).floor
+    expect(floor).toBeGreaterThan(1)
+    // Skip pays nothing, swings nothing, and moves on.
+    await ui.press({ key: 'skip' })
+    expect((state.run as Run).floor).toBe(floor)
+    expect(await ui.find({ type: 'Text', text: /✗ Line 3 skipped/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /REPLY 1\/2/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /90% on average to the end pays \+1 XP/ })).toBeDefined()
+    await type(r.lines[3]!)
+    expect(purse().xp).toBe(0)
+    await type(r.lines[4]!)
+    expect(toasts.at(-1)).toBe('Reply typed through: 100% on average. +1 XP.')
+    expect(purse().xp).toBe(RECAP_DONE_XP)
+
+    // Done: the lines come round again, unpaid, for speed.
+    expect(await ui.find({ type: 'Text', text: /✓ Line 5: 100% · 0 WPM · reply 100% on average · \+1 XP/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /PRACTICE 1\/5/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /unpaid, for speed · reply 100% on average/ })).toBeDefined()
+    await type(r.lines[0]!)
+    expect(purse()).toMatchObject({ energy: 0, xp: RECAP_DONE_XP })
+    expect((state.recap as Recap).at).toBe(6)
+    await ui.unmount()
+  })
+
+  test("with Haiku off the reply's own sentences make the line; a sloppy round pays nothing", async ($, on) => {
+    const { state, toasts } = world(on, { flavor: SEEN, haikuOn: false })
+    let asked = 0
+    on('model.complete', () => {
+      asked++
+      return { value: { isAnswered: true as const, text: 'never shown', usage: USAGE } }
+    })
+    await $.turn.start({ text: 'fix login', turnId: 't1' })
+    await $.turn.complete(end('t1', LONG))
+    expect((await landed(state)).lines[0]).toBe(FALLBACK)
+    expect(asked).toBe(0)
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    expect(await ui.find({ type: 'Text', text: /Warning: two tests are still skipped/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Should I push now\?/ })).toBeDefined()
+    await keys(ui, 'I fixed something else entirely\n')
+    expect(toasts.at(-1)).toBe('Line 1 typed: 13% at 0 WPM. 90% earns +2 energy.')
+    expect((state.purse as { energy: number } | undefined)?.energy ?? 0).toBe(0)
+
+    // The next prompt keeps it up, mid-game, while Claude works.
+    await $.turn.start({ text: 'next', turnId: 't2' })
+    expect(await ui.find({ type: 'Text', text: /✗ Line 1: 13% · 0 WPM · 90% pays \+2 energy/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Key points/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test("while Claude works the last reply's recap stays typeable; the new reply's replaces it", async ($, on) => {
+    const { clock, state, toasts } = world(on, { flavor: SEEN, haikuOn: false })
+    await $.turn.start({ text: 'fix login', turnId: 't1' })
+    await $.turn.complete(end('t1', LONG))
+    const last = await landed(state)
+    await $.turn.start({ text: 'now the docs', turnId: 't2' })
+    expect(state.mode).toBe('combat')
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    // Typing is the attack while there is a recap: no Attack button, the hint points at the field.
+    expect(await ui.find({ type: 'Button', text: /Attack/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /90% pays \+2 energy/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /click the words and type to attack/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /A attack/ })).toBeUndefined()
+    await keys(ui, FALLBACK)
+    expect(toasts.at(-1)).toMatch(/^Line 1 typed: 100% at \d+ WPM\. \+2 energy/)
+    expect((state.run as Run).floor).toBeGreaterThan(1)
+
+    await clock.advance(10_000)
+    await $.turn.complete(end('t2', `${LONG}\n\nTL;DR: Rewrote the setup guide for new users.`))
+    const next = await landed(state, last)
+    expect(next.lines[0]).toBe('Rewrote the setup guide for new users.')
+    expect(next.at).toBe(0)
+    expect((await ui.find({ type: 'Client', key: 'typer' }))?.props.props).toMatchObject({ line: 'Rewrote the setup guide for new users.', typed: '' })
+    await ui.unmount()
+  })
+
+  test('Monkeytype typing: a slip stays and the caret moves on; Backspace mends only the word you are on', async ($, on) => {
+    const { clock, state } = world(on, { flavor: SEEN, haikuOn: false })
+    await $.turn.start({ text: 'fix login', turnId: 't1' })
+    await $.turn.complete(end('t1', LONG))
+    const r = await landed(state)
+    expect(r.lines[0]).toBe(FALLBACK)
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    const typed = () => (state.recap as Recap).typed
+
+    // One dot per line, the summary three apart from the rest; the first one is here, in the phase colour.
+    const first = (await ui.findAll({ type: 'Text' })).filter(t => /^ ?[●○]$/.test(t.text))
+    expect(first.map(t => t.text)).toEqual(['●', '○', '○', ' ○', '○'])
+    expect(first[0]!.props).toMatchObject({ color: 'suggestion', bold: true })
+
+    // A space before a word starts does nothing; Backspace cannot reopen a finished word.
+    await keys(ui, ' I ')
+    expect(typed()).toBe('I ')
+    await keys(ui, '\b')
+    expect(typed()).toBe('I ')
+    await keys(ui, 'fixed ')
+    await clock.advance(6000)
+    // A wrong letter stays where it fell; the caret moves on past it.
+    // Ctrl+Backspace clears the word you are on, no further.
+    await keys(ui, 'xx')
+    await ui.key({ key: 'backspace', ctrl: true, in: 'typer' })
+    expect(typed()).toBe('I fixed ')
+    await keys(ui, 'tz')
+    expect(typed()).toBe('I fixed tz')
+    // Backspace mends the word you are on.
+    await keys(ui, '\b')
+    expect(typed()).toBe('I fixed t')
+    await keys(ui, 'eh ')
+    expect(typed()).toBe('I fixed teh ')
+    // Two of three words right; "I fixed teh " is 12 characters in 6 s.
+    expect(await ui.find({ type: 'Text', text: /24 WPM · 67% acc/ })).toBeDefined()
+    // The slip shows in red on the letters that differ, the word underlined; the caret sits on the next word's first letter.
+    const texts = await ui.findAll({ type: 'Text', in: 'typer' })
+    expect(texts.filter(t => t.props.color === 'error').map(t => t.text)).toContain('he')
+    expect(texts.filter(t => t.props.color === 'error').every(t => t.props.underline === true)).toBe(true)
+    expect(texts.filter(t => t.props.inverse === true).map(t => t.text)).toEqual(['l'])
+
+    // Enter checks the words typed, the one in progress finished too.
+    await keys(ui, 'login\n')
+    expect((state.recap as Recap).at).toBe(1)
+    expect(typed()).toBe('')
+    expect(await ui.find({ type: 'Text', text: /✗ Line 1: 20% · \d+ WPM · 90% pays \+2 energy/ })).toBeDefined()
+    const dots = (await ui.findAll({ type: 'Text' })).filter(t => /^ ?[●○]$/.test(t.text))
+    expect(dots[0]).toMatchObject({ text: '●', props: { color: 'error' } })
+    expect(dots[1]).toMatchObject({ text: '●', props: { color: 'suggestion', bold: true } })
+    // An Enter on a line not started skips nothing.
+    await keys(ui, '\n')
+    expect((state.recap as Recap).at).toBe(1)
+    await ui.unmount()
+  })
+
+  test('a long reply shows only the dots near the line here, so the card never overflows', async ($, on) => {
+    const { state } = world(on, { flavor: SEEN, haikuOn: false })
+    const said = ['login', 'tokens', 'server', 'cache', 'router', 'schema', 'parser', 'logger', 'worker', 'queue', 'mailer', 'billing', 'search', 'upload', 'export', 'import']
+    await $.turn.start({ text: 'fix everything', turnId: 't1' })
+    await $.turn.complete(end('t1', said.map(w => `I rewrote the ${w} module to be faster.`).join(' ')))
+    const r = await landed(state)
+    expect(r.lines.length).toBeGreaterThan(DOTS_SHOWN + 2)
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    const dots = async () => (await ui.findAll({ type: 'Text' })).filter(t => /^ ?[●○]$/.test(t.text) || t.text === '…')
+    const shown = async () => (await dots()).map(t => t.text.trim())
+
+    // At the start: the first ten, then "…" for the rest; the tag still counts them all.
+    expect(await shown()).toEqual(['●', ...Array(DOTS_SHOWN - 1).fill('○'), '…'])
+    expect(await ui.find({ type: 'Text', text: new RegExp(`^SUMMARY 1/${r.top}$`) })).toBeDefined()
+
+    // Further in: "…" on both sides, the line here fifth, still ten dots.
+    for (let i = 0; i < 6; i++) await ui.press({ key: 'skip' })
+    expect((state.recap as Recap).at).toBe(6)
+    const mid = await shown()
+    expect(mid[0]).toBe('…')
+    expect(mid.filter(t => t !== '…')).toHaveLength(DOTS_SHOWN)
+    expect((await dots())[5]).toMatchObject({ props: { color: 'claude', bold: true } })
+    await ui.unmount()
+  })
+
+  test('typing is the fight: a right word swings, a wrong one does not, and the frozen room fights on', async ($, on) => {
+    const { clock, state } = world(on, { flavor: SEEN, haikuOn: false })
+    await $.turn.start({ text: 'fix login', turnId: 't1' })
+    await $.turn.complete(end('t1', LONG))
+    expect((await landed(state)).lines[0]).toBe(FALLBACK)
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    const type = (text: string) => keys(ui, text)
+    const slime = () => (state.run as Run).monster.hp
+    const scene = async () => String((await ui.findAll({ type: 'Svg' }))[0]?.props.source)
+
+    // In the freeze with a recap up, the room keeps its colour and no board covers the fight.
+    expect(await scene()).not.toContain('url(#frozen)')
+    // No energy: each right word swings weak for 1, and draws no hit back.
+    await type('I ')
+    expect(slime()).toBe(3)
+    await type('fixed ')
+    expect(slime()).toBe(2)
+    expect((state.run as Run).hp).toBe(10)
+    // Letters between swings redraw the same scene, so its last blow does not play again.
+    const was = await scene()
+    await clock.advance(2000)
+    await type('t')
+    expect(await scene()).toBe(was)
+    // A wrong word swings nothing (the slime may hit back).
+    await type('eh ')
+    expect(slime()).toBe(2)
+    expect((state.run as Run).hp).toBeGreaterThanOrEqual(9)
+    // Enter finishes the word being typed too.
+    await type('login\n')
+    expect(slime()).toBe(1)
+    // Nothing drops in the freeze: nothing could be grabbed.
+    expect(state.loot).toEqual([])
+    await ui.unmount()
+  })
+
+  test('a short reply gets no round and asks no model', async ($, on) => {
+    const { state } = world(on, { flavor: SEEN })
+    let asked = 0
+    on('model.complete', () => {
+      asked++
+      return { value: { isAnswered: true as const, text: 'never shown', usage: USAGE } }
+    })
+    await $.turn.start({ text: 'thanks', turnId: 't1' })
+    await $.turn.complete(end('t1', 'Done.'))
+    expect((await landed(state)).lines).toEqual([])
+    expect(asked).toBe(0)
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    expect(await ui.find({ type: 'Client', key: 'typer' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('a reply with a TL;DR line types it and asks Haiku nothing', async ($, on) => {
+    const { state } = world(on, { flavor: SEEN })
+    let asked = 0
+    on('model.complete', () => {
+      asked++
+      return { value: { isAnswered: true as const, text: 'TYPE: never shown', usage: USAGE } }
+    })
+    await $.turn.start({ text: 'fix it', turnId: 't1' })
+    await $.turn.complete(end('t1', `${LONG}\n\nTL;DR: Fixed the login bug and added a regression test.`))
+    expect((await landed(state)).lines[0]).toBe('Fixed the login bug and added a regression test.')
+    expect(asked).toBe(0)
+  })
+
+  const COMPOSE = { model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: [], tools: [], outputStyle: null, traits: [] } as const
+  test('/delve tldr flips the TL;DR ask, which joins the system prompt only while on', async ($, on) => {
+    const stored: Record<string, unknown> = {}
+    on('store.get', (_$, e) => ({ value: stored[e.key] }))
+    on('store.set', (_$, e) => {
+      stored[e.key] = e.value
+      return { value: undefined }
+    })
+    on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are Claude.', scope: 'shared' as const }] }))
+    const ids = async () => (await $.prompt.compose(COMPOSE)).sections.map(x => x.id)
+    const tldr = async (args: string) => (await $.command.run({ ...RUN, command: 'delve', args })).text
+    expect(await ids()).toEqual(['intro'])
+    expect(await tldr('tldr')).toMatch(/^TL;DR on/)
+    expect(await ids()).toEqual(['intro', 'delve:tldr'])
+    expect((await $.prompt.compose(COMPOSE)).sections.at(-1)).toEqual({ id: 'delve:tldr', text: TLDR_ASK, scope: 'session' })
+    expect(await tldr('tldr off')).toMatch(/^TL;DR off/)
+    expect(await ids()).toEqual(['intro'])
+    expect(await tldr('tldr sideways')).toMatch(/Usage/)
   })
 })

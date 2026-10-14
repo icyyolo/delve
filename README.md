@@ -33,7 +33,7 @@ farming, frozen, torch out, ally + doppelganger, death, capped hearts, quest scr
 - Claude Code with plugin (mod) support, run from the **desktop app**. Built and tested against
   Claude Code 2.1.293–2.1.295. Other surfaces (terminal, IDE, mobile) show a one-line "desktop only" notice.
 - Node.js, only for the sprite tooling in `tools/`.
-- No API keys. Flavor lines and shop stock use Claude Haiku through Claude Code's own model access
+- No API keys. Flavor lines, shop stock and reply recaps use Claude Haiku through Claude Code's own model access
   (`$.model.complete`), capped per day, with hand-written fallbacks. `/delve haiku off` turns the
   calls off entirely, so the game spends no tokens.
 
@@ -69,7 +69,8 @@ To load a source checkout in every session, add the folder to `CLAUDE_CODE_PLUGI
 | `/delve off` | Close the pane and keep it off across restarts |
 | `/delve shop` | Turn the pane to the shop and print the wares as text |
 | `/delve buy <id>` | Buy a ware with XP, e.g. `/delve buy vitality` |
-| `/delve haiku [on\|off]` | Toggle Haiku flavor lines and shop picks; off = no model calls, built-in tables instead (kept across restarts) |
+| `/delve tldr [on\|off]` | Ask Claude to end each longer reply with a one-line `TL;DR:`, which the recap types as written (off by default; about 20 tokens a reply; kept across restarts) |
+| `/delve haiku [on\|off]` | Toggle Haiku flavor lines, shop picks and reply recaps; off = no model calls, built-in tables and the reply's own sentences instead (kept across restarts) |
 
 ## How to play
 
@@ -81,6 +82,11 @@ The pane shows one room: the warrior on the left, a monster on the right, a HUD 
    warrior   loot(1)(2)     ▬▬▬▭ skeleton      ← HP bar over each foe
  ⚔ ★★          F3 CRYPT            🔥 62%      ← weapon, free swings, floor, context fill
 ```
+
+Attack and Shop sit on the first row of buttons (Attack only while there is no recap to type: then typing is
+the attack, see below); loot Grab buttons wrap on the rows below. The keys work
+only while the pane holds the keyboard: click it or press `ctrl+x tab` (a dim line under the buttons says
+which state it is in), and Esc hands the keyboard back to the prompt.
 
 | Key (pane focused) | Action |
 |---|---|
@@ -125,6 +131,51 @@ The pane shows one room: the warrior on the left, a monster on the right, a HUD 
 Send your next prompt after that and before the torch burns out (5 min) for **+3 energy (momentum)**.
 Drift past 5 minutes and the torch goes out: the monster gets one free hit.
 
+**Reply recap.** When Claude answers, the pane turns the reply into plain lines to type (at most 20 words
+each, never code), with up to 3 key points (questions for you, things you must do, warnings or failures) and
+the files Claude edited that turn. The line sits in a card, and you type straight into it the way Monkeytype
+works: click the words once, then type. There is no input box; the caret sits in the line. A wrong letter
+stays red where it fell and the caret moves on. Backspace (Ctrl+Backspace for the whole word) mends only the
+word you are on, never a finished one, and a space before a word starts does nothing. The line ends itself
+when its last word is typed right, or on a space after it, or on Enter; **Skip line** moves on. Letters typed
+right turn bright, letters still to come stay dim, letters past a word's end show dim red, and a finished
+word with a slip is underlined. Keys are handled in the pane itself (a `Client` surface module), so fast
+typing never waits on the game. The card's header shows a tag for where you are (SUMMARY 1/3, REPLY 2/5,
+PRACTICE), a row of dots for each line (green paid, red short or skipped, hollow to come) and your live WPM
+and accuracy; its footer says what the line pays. A line under the card says how the last line went and what
+it earned, and the key points sit in a card of their own below.
+
+**Typing is the fight.** Each word you finish right swings at the monster (1 energy for a full swing while you
+have any, else a weak swing for 1), and draws no hit back. Each word you get wrong gives the monster its
+hit-back chance instead (50%, less with the Shield). Words typed past the line's end do nothing. This works in
+the freeze too: with a recap up, the room stays in colour and fights on under the torch fuse (nothing drops
+there, since loot cannot be grabbed until Claude works again). The lines, in order:
+
+- **Up to 3 summary lines.** 90% of the words right pays **+2 energy** for the first (and **+1 XP** at 60 WPM
+  or faster), **+1 energy** for the second and third.
+- **Then the whole reply**, one sentence a line in reading order, minus the summary lines. Long sentences split
+  at a clause break; a sentence that loses a third of itself to code or paths, or ends up under 4 words, is
+  skipped. These lines pay nothing one by one: finishing the last one with a 90% average (a skip counts 0)
+  pays **+1 XP** once, however long the reply.
+- **Then the lines come round again** for speed, unpaid, with your best WPM shown.
+
+Each line pays once, on top of momentum; skipping costs nothing. The recap stays up after you send your next
+prompt, so you can keep typing while Claude works (the pane's keys stay on the shop and loot until you click
+the words) until the new reply's recap replaces it. Where the summary lines come from, first that answers:
+
+1. **Claude's own TL;DR line**, when the reply ends with `TL;DR: ...` (`/delve tldr on` asks for one every
+   time). No Haiku call that turn; the reply's best sentences fill lines 2 and 3.
+2. **Haiku** writes up to 3 lines and the points (one call per turn, the reply cut to 4,000 characters, 6 s
+   timeout); the reply's best sentences fill any it leaves.
+3. **The reply's best sentences**, with Haiku off, capped or failing. Each sentence scores for how much of it the
+   rest of the reply repeats, for opening or closing the reply, for a summary label or heading ("In short:",
+   "## Summary"), and for words about what got done; it loses for code, paths, warnings and length. Questions and
+   lead-ins ("Here's what I changed:") never count, terse fragments ride with the next sentence, and a long pick
+   is cut at a clause break. It can only pick Claude's wording, not summarise, so a TL;DR line or Haiku reads better.
+
+Key points are Haiku's, or else the reply's questions and warning lines. A reply under 8 words gets no typing
+round and no Haiku call.
+
 ## Game rules in numbers
 
 **Hero.** 10 HP (+2 per Vitality level). A swing hits for 1, a crit doubles it to 2 (20% chance, +10% per
@@ -162,7 +213,7 @@ run, Claude Haiku picks 3 wares and a one-line pitch (8 s timeout; dice pick if 
 | Deep dwellers | mimics and golems appear | 1 | 50 XP |
 
 **Flavor.** One Haiku line per room (4 s timeout, at most 120 characters), with 3 hand-written lines per
-monster as the fallback. Haiku calls (flavor + shop) are capped at 200 per UTC day, and `/delve haiku off` stops them.
+monster as the fallback. Haiku calls (flavor + shop + recap) are capped at 200 per UTC day, and `/delve haiku off` stops them.
 
 ## How it works
 
@@ -174,11 +225,12 @@ The plugin is one hooks module (`hooks/register.tsx`) registered through `hooks/
 |---|---|
 | `session.start` | Register `/delve`, load the saved run, re-arm the torch, open the pane |
 | `turn.start` | Unfreeze, check the read gate (momentum), start the 3 s farm timer (re-armed after every tool call) |
-| `tool.call` | +1 energy, forge the weapon, summon a familiar, track the quest board; a subagent's calls count toward its own fight. Fails open: a game error never blocks a tool |
+| `tool.call` | +1 energy, forge the weapon, summon a familiar, track the quest board, note the files Claude edits; a subagent's calls count toward its own fight. Fails open: a game error never blocks a tool |
 | `agent.spawn` | Add an ally or a doppelganger |
 | `session.compact` | Quake |
 | `skill.prompt` | Cast a spell |
-| `turn.complete` | Freeze, start the torch, apply how the turn ended, read context fill; settle a finished subagent |
+| `turn.complete` | Freeze, start the torch, apply how the turn ended, read context fill, build the reply recap in the background; settle a finished subagent |
+| `prompt.compose` | With `/delve tldr on`, add one section at the end of the system prompt asking for a `TL;DR:` line |
 | `command.run` | `/delve` and its sub-commands |
 | `ui.render` (Pane) | Draw the pane |
 
@@ -208,9 +260,11 @@ hooks/combat.ts              combat rules (pure)
 hooks/claude.ts              how Claude's work maps to the game (pure)
 hooks/shop.ts                meta shop rules, Haiku shop prompt and parsing (pure)
 hooks/flavor.ts              Haiku flavor prompt and parsing, fallback table
+hooks/recap.ts               reply recap: lines to type, key points, scoring, letter marks (pure)
+hooks/typer.tsx              the Monkeytype-style typer, a Client surface module (keys handled in the pane)
 hooks/sprites.gen.ts         GENERATED from assets/ by tools/sprites.mjs, do not edit
 types/index.d.ts             state contract (every value the plugin keeps)
-tests/delve.test.tsx         40 tests
+tests/delve.test.tsx         64 tests
 tools/sprites.mjs            sprite validator, PNG contact sheets, preview page, generator
 assets/                      palette, sprite manifest, style brief, sprite JSON, previews
 docs/gallery.jpg             rendered pane states

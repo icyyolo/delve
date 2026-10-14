@@ -91,6 +91,14 @@ export function strike(r: Run, dealt: number, roll: Roll, meta: Meta = NO_META):
   return { ...r, monster: { ...r.monster, hp: left }, last: { dealt, took: 0, isEvent: true } }
 }
 
+// A recap word typed wrong: the monster may hit back (the shield helps); a miss changes nothing.
+export function counter(r: Run, roll: Roll, meta: Meta = NO_META): Run {
+  if (r.isDead || roll() >= counterFor(meta)) return r
+  const took = STATS[r.monster.kind].atk
+  const hp = Math.max(0, r.hp - took)
+  return { ...r, hp, isDead: hp === 0, last: { dealt: 0, took, isEvent: true, note: `Typo! The ${r.monster.kind} hit you for ${took}.` } }
+}
+
 // The torch burnt out while the person drifted: the monster gets one free hit.
 export function ambush(r: Run): Run {
   if (r.isDead) return r

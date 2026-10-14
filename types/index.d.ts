@@ -80,6 +80,27 @@ export type Spell = { skill: string; swings: number }
 // One item of Claude's todo list, shown as a quest.
 export type Quest = { id: string; text: string; isDone: boolean }
 
+// The recap of Claude's reply (`id`: the turn end it belongs to): plain lines to type (none:
+// no round), the first `top` of them summary lines that pay, then the rest of the reply in
+// order; key points, the files Claude edited, and the typing so far. `at` is the line being
+// typed; from `lines.length` on the reply is done and the lines come round again, unpaid.
+// `accuracies` holds each finished line's (a skip counts 0), `last` the last line's score,
+// `best` the best WPM retyping after the reply is done.
+export type Recap = {
+  id: number
+  isPending: boolean
+  lines: string[]
+  top: number
+  at: number
+  accuracies: number[]
+  keys: string[]
+  files: string[]
+  typed: string
+  startedAt: number | null
+  last?: { accuracy: number; wpm: number }
+  best?: number
+}
+
 declare module 'claude-code' {
   interface PluginState {
     delve: {
@@ -100,6 +121,9 @@ declare module 'claude-code' {
       quests: Quest[]
       // The context window's fill at the last turn end, 0-100; the torch dims with it.
       context: number | null
+      recap: Recap | null
+      // Files Claude's Edit/Write calls touched this turn; the pane never reads it.
+      edited: string[]
     }
   }
 }

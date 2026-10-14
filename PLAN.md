@@ -1,7 +1,8 @@
 # Claude's Depths — PLAN
 
 Pixel-art roguelite dungeon crawl in a Claude Code desktop pane. Goal: keep attention on
-Claude Code (fun first, focus later). Plugin name: `delve` (plugin names may not start with `claude-`).
+Claude Code (fun first, focus later). Mod folder: `dev-mods/<session>/delve/` (plugin names may not start with `claude-`). Canonical copy: this file. Vault mirror:
+`Obsidian Vault Claude Scraping/Claude's Depths PLAN.md`.
 
 ## Locked spec
 
@@ -19,7 +20,8 @@ Claude Code (fun first, focus later). Plugin name: `delve` (plugin names may not
   room (desaturated, idles still, YOUR MOVE board, 5-min torch fuse bar). Dead = YOU FELL board.
   `<title>` tooltips on hero, monster, ally, rival, loot, HUD parts. 3x5 pixel font + mini icons are
   in `hooks/scene.ts`. Text = one line (event note, else Haiku line). Buttons have hotkeys: A attack,
-  1-3 grab / buy, S shop, N new run, B back. Quests = parchment Svg; shop = counter Svg with
+  1-3 grab / buy, S shop, N new run, B back. Row 1 = Attack/New run + Shop, Grab buttons wrap below;
+  a dim line under them says how to give the pane the keys. Quests = parchment Svg; shop = counter Svg with
   shopkeeper, wares, prices (red when short), owned row. Every Svg alt carries the full text.
 
 **Game loop**
@@ -32,11 +34,53 @@ Claude Code (fun first, focus later). Plugin name: `delve` (plugin names may not
   (time on reply, scaled by its length).
 - Torch timer after turn end: drift > 5 min → one ambush (free monster hit), torch then "out".
   Status line: `Depths · energy E · XP X · torch Nm` (updates once a minute while frozen).
-- Freeze: turn end locks Attack/Grab, clears loot; turn start unlocks. Read gate: read time =
+- Freeze: turn end locks Attack/Grab, clears loot (no drops while idle); turn start unlocks. With a recap to
+  type the freeze is a typing duel: recap words still swing, the scene keeps colour and loops, no board, fuse
+  only (time left drawn in 15 s steps so keystrokes redraw the same scene). Read gate: read time =
   words ÷ 250 wpm ÷ 2, clamped 3 s–2 min; next prompt after it and before torch out → +3 energy.
+
+**Reply recap** (checkpoint 13, built)
+- Main turn.complete (not subagents) builds a recap of `e.answer`: plain lines to type (≤20 words each, no code,
+  no symbols; up to 3 summary lines, then the whole reply in order) + up to 3 key points, one short line each: questions to you, things you must do (a command,
+  a restart), warnings/failures. Files changed come from this turn's Edit/Write/NotebookEdit tool calls
+  (basenames, up to 3 + "N more"), not from the model.
+- Haiku via askHaiku (same 200/day cap, `/delve haiku off`, timeout): reply trimmed to 4,000 chars, answers
+  up to 3 `TYPE: ...` + up to 3 `KEY: ...` lines, sanitised (no backticks/code blocks, length caps). One call per
+  turn, roughly 1.2k tokens in, ≤120 out; 0 tokens when off.
+- Line order: Claude's own `TL;DR:` line when the reply has one (`/delve tldr on` asks for it through a
+  prompt.compose section; no Haiku call then), else Haiku, else the fallback.
+- Fallback (Haiku off, capped, timed out, unparseable): typed line = the best-scoring prose sentence
+  (centrality, first/last paragraph, summary label or heading, done-words; minus code, paths, warnings,
+  length; no questions or lead-ins; fragments join the next sentence), cut at a clause break past 20 words;
+  key points = lines ending `?` or holding
+  warning/error/failed/"you need to", max 3. Reply under 8 words → no typing round (key points still shown).
+- Pane in the freeze and while Claude works: the line in a round-bordered card (border in the phase colour).
+  Header: phase tag (SUMMARY n/3, REPLY n/m, PRACTICE n/all; bold, phase colour), one dot per line (green ≥90%,
+  red short or skipped, hollow to come, the line here a bold dot in the phase colour; summary dots apart; at most 10
+  dots, those near the line here, "…" for the rest, so a long reply never runs past the border), live "Y WPM · X% acc" on the right
+  (finished words right; WPM after 2 s; read when a keystroke redraws, no clock). Body: the typer, a `Client`
+  surface module (`hooks/typer.tsx`) that takes keys on the drawing thread and posts the whole text typed to a
+  `ui.message` hook (posts for a line already left are dropped). Monkeytype rules: no input box, caret = inverse
+  next letter in the line; a wrong letter stays red and the caret moves on; Backspace (Ctrl = whole word) mends
+  only the current word, never a finished one; a space before a word starts does nothing; the line ends on its
+  last word typed right, a space after it, or Enter (Enter on a line not started does nothing). Right letters
+  bright, to come dim, extra letters dim red, a finished word with a slip underlined. Footer: what the line pays
+  and "Skip line". Below the card: a ✓/✗ line for the last line's score and pay, then "Key points" in a dim
+  round card (bullets as plain one-line Text, never code blocks).
+  "summarising…" until the recap lands. Recap kept through the next turn (typeable mid-turn; the typer takes
+  keys only once clicked, so the pane keys stay on the shop and loot) until the next reply's recap replaces it.
+- Graded when the line ends, once per line, then the next line; "Skip line" moves on scoring 0. Accuracy = matched
+  words ÷ target words; WPM from first keystroke to the line's end. Summary line 1 ≥90% → +2 energy (≥60 WPM → +1 XP too);
+  lines 2–3 ≥90% → +1 energy. Whole-reply lines pay nothing alone; leaving the last with ≥90% average (skips 0)
+  → +1 XP once. After that the lines cycle unpaid, best WPM shown. Skipping costs nothing. Adds on top of the +3 read-gate
+  momentum (user choice). Reward told by toast: the pane still never reads the purse.
 
 **Combat** (`hooks/combat.ts`, pure)
 - Attack button costs 1 energy (none → weak swing: 1 dmg, no crit, no weapon; mid-turn regen +1/15 s up to 3). Hit 1, crit 2 (20%). Survivor hits back 50% for its atk.
+- Typing is the attack: each recap word finished right (space, or the line's end for the last word) = one swing
+  (spell/energy power, else weak 1) with no hit back; each word finished wrong = the monster's counter chance
+  (50%, -10%/Shield level) for its atk, "Typo!" note. Words past the line's end count for nothing. The Attack
+  button shows only mid-turn with no recap lines (hint drops "A attack" while typing).
 - Kill: +gold, +1 HP, next floor, new monster from the floor's pool (slime/bat 1+, skeleton 3+,
   wraith 5+, mimic 6+, golem 8+; HP +1 per 2 floors). Biome flips every 5 floors.
 - HP 0 → dead pose + "New run" button. Last blow plays once via SMIL (swing, flinch, counter).
@@ -106,6 +150,7 @@ Claude Code (fun first, focus later). Plugin name: `delve` (plugin names may not
 | 10 | Shop GUI in the pane | Shop button opens wares with icons; Buy works; Back returns | built; 30 tests pass; layout mock shot; live pane shot pending (user) |
 | 11 | Claude elements: subagent allies/doppelganger, tool weapons, compaction quake, context torch, turn-end events, skill spells, todo quests | Ally strikes on finish; fork duel won by Attack; each event changes the run as specced | built; 40 tests pass; scene gallery shot; live pane shot pending (user) |
 | 12 | Pane UI overhaul: HUD + effects in the Svg, frozen overlay, tooltips, hotkey toolbar, quest parchment, shop shelf | Text cut to one line; tests read the Svg alt; gallery of each state | built; 40 tests pass; gallery shot; live pane shot pending (user) |
+| 13 | Reply recap typing round + key points | Freeze shows recap + key points; Haiku off → fallback line; ≥90% typed → +2 energy | built; 51 tests pass; live pane check pending (user) |
 | 9 | Tests, validate, final screenshot pass | All pass; screenshots of each state | tests/validate/tsc/sprites pass; scene gallery shot; live pane screenshots pending (user) |
 
 ## Definition of done
@@ -140,3 +185,14 @@ Claude Code (fun first, focus later). Plugin name: `delve` (plugin names may not
 - 2026-10-14: `/delve haiku [on|off]` (user ask: toggle so the game spends no tokens). Bare `/delve haiku` flips; stored as `haikuOn` (default on) like `enabled`; askHaiku returns undefined first when off, so flavor uses the table and the shop rolls dice. Tests: toggle flips/stores, off = no model call on kill or shop (42 pass).
 - 2026-10-14: Loot more often (user ask: drops were rare). Farm timer re-armed after every tool call, so any 3 s gap farms (was: only before the first call); drop every 4 s (was 5); drops last 7 s (was 3); every kill (hero or ally blow) drops one. Tests: farm-gap test replaces "tool call means no loot", kill-drop test, fade test checks the missed drop by id (43 pass).
 - 2026-10-14: Weak swing + regen (user: running out of energy made the game unplayable). At 0 energy Attack still swings weak: 1 dmg, no crit, no weapon edge (Edge.isWeak in combat.ts), with a "Weak swing, no energy" note; no toast. Mid-turn (mode not idle) energy below 3 regens +1 per 15 s (REGEN_MS/REGEN_CAP, clock.every armed at session.start, not counted in `gained`). Attack label drops the energy cost (pane must not read the purse); shows (free) under a spell. Tests: weak-swing Attack test replaces the no-energy toast test, regen tick + cap + idle, weak portal swing pulls no loot.
+- 2026-10-14: Button rows + key hint (user ask). Row 1 = Attack/New run + Shop (Box key "actions"); Grab buttons wrap in their own row below (Box key "loot", only with drops). Dim hint line from e.props.isFocused: unfocused "click the pane or press ctrl+x tab", focused "Keys on ... Esc back to the prompt" (hotkeys never fire from the prompt). Test: row contents + both hint states (46 pass).
+- 2026-10-14: Reply recap planned, not built (user idea: Monkeytype-style typing of a summary of Claude's reply so the person knows what Claude said). User decisions: no code in the typed line; key points (questions to you, things you must do, warnings/failures, files changed) shown read-only in the pane; typing reward adds on top of momentum; plan only for now. Spec under "Reply recap", checkpoint 13.
+- 2026-10-14: Reply recap plan: Haiku-off fallback skips lead-in sentences (ending in `:`, or under 4 words like "Done.") before picking the typed line (user ask).
+- 2026-10-14: Checkpoint 13 built: reply recap (user ask). hooks/recap.ts (pure: hasRound, fallbackLine with lead-in skip and code-free preference, fallbackKeys, recapPrompt, readRecap, editedPath, fileList, score, marks). recap + edited atoms; tool.call notes Edit/Write/NotebookEdit paths; turn.complete runs summarise in the background (.catch: a failure shows none; a recap for a turn already replaced is dropped); turn.start clears both. Pane in the freeze: line drawn word by word (right green, wrong red, current word letter by letter), Input "recap-input" (autoFocus), key points + files changed; hint line adds "type the recap". Enter scores once: ≥90% +2 energy, ≥60 WPM +1 XP, toast either way. /delve haiku texts mention recaps. Fixed a pre-existing flaky test (weapon test seeded an 8-HP slime but never ran session.start, so a sword crit + familiar killed the default 4-HP slime ~20% of runs). 51 pass (8 runs in a row), tsc clean, validate passed. Live pane check pending (user).
+- 2026-10-14: Recap fallback rework (user: the first-sentence fallback did not capture the reply). Line order now: Claude's own TL;DR line (tldrOf; `/delve tldr [on|off]`, stored `tldrOn`, default off, adds a `delve:tldr` session section via prompt.compose; no Haiku call when found) → Haiku → fallbackLine, now a scored pick: centrality (shared content words, weighted in only from 3+ sentences), first/last paragraph, summary label or heading, done-words cue, mid length; minus code/paths, warnings, >30 words; questions and lead-ins excluded, terse fragments join the next sentence, long picks cut at a clause break. TL;DR lines stay out of key points; `;` now typeable. Checked on three real replies from this session: picks are reasonable, not true summaries (README says so). Tests: scorer on realistic replies + fragment, TL;DR parse/keys, TL;DR reply skips Haiku, /delve tldr + compose section (55 pass).
+- 2026-10-14: Recap typeable while Claude works too (user ask). turn.start no longer clears the recap; it stays (scored or not) until the next turn.complete's recap replaces it. Pane draws it in every mode; mid-turn the Input has no autoFocus (else the pane's A/S/1-9 keys would type into it), hint says "click the field to type the recap". An unfinished round is dropped when the new reply lands. Tests: the Haiku-off test now checks the scored recap survives the next prompt; new test types the last reply's line mid-turn (energy paid), then the new reply replaces it with autoFocus back. 56 pass (3 runs), tsc clean.
+- 2026-10-14: Recap became a running game (user ask). Recap now holds `lines` (up to 3 summary lines = `top`, then restLines: the whole reply one sentence a line in reading order, long ones split at clause breaks via chunks/shorten, sentences that lose ≥1/3 to code/paths or <4 words skipped, summary lines not repeated), `at`, `accuracies`, `last`, `best`. Summary lines: TL;DR line / Haiku's up to 3 TYPE lines (prompt asks for 3, maxTokens 150→220), filled by rankedLines (the old fallback scorer, now returning every candidate best-first). Enter scores and advances; Skip line advances scoring 0. Pay: line 1 ≥90% +2 energy (+1 XP ≥60 WPM), lines 2–3 +1 energy each, leaving the last line with ≥90% average over the rest +1 XP once; then lines cycle unpaid with best WPM. Input now gets `value` (cleared on each new line). Checked on a real reply: queue reads in order, broken sentences dropped. Tests: topLines/restLines (gutted sentence skip, link kept, clause split, dedupe), readRecap multi-TYPE, full run-through test (pay, skip, XP bonus, unpaid cycle); existing recap tests moved to the new toasts. 58 pass (3 runs), tsc clean.
+- 2026-10-14: Typing UI pass (user ask: suggestions 1, 2, 3, 5, 6, 7, and the field must always show the word being typed; it scrolled out of sight on long lines). recap.ts: marks now per letter (extra letters, missing letters in done words, caret part, a space caret once the word is typed); liveScore (finished-word accuracy, WPM after 2 s); wordNow/withWord (field holds one word; typed = done words + field). register.tsx: typeRecap/checkRecap join the field onto the done words; pane draws phaseOf tag + per-line dots + pay note, letter marks with inverse caret and struck extras, "So far" live line, Input value = current word, resultOf ✓/✗ line under Skip. Toasts unchanged. Tests: letter marks, field join, live score, a word-by-word pane test (field value per word, live stats, red letters, caret, dots, result line); recap tests moved to the new texts. 60 pass, tsc clean, validate passed. Live pane check pending (user): whether the desktop field takes the cleared value at each space is only proven in the test harness.
+- 2026-10-14: Typing is the fight (user ask: auto attack on each word typed right instead of the Attack button; user said build). recap.ts: finishedWords (words finished between two typings, right or not, none past the line). combat.ts: counter (a typo: monster hits back at counter chance, shield lowers it). register.tsx: typeRecap and checkRecap (Enter finishes the field word) feed fight(): right word = swing($, isWord) (allowed in the freeze, no weak-swing note, isRanged so no hit back), wrong = counter. dropLoot skips while idle. Attack button and "A attack" hint only with no recap lines. Freeze scene with a recap: isFighting (colour, loops, no board or grey, fuse kept); fuse leftMs rounded up to 15 s steps so keystrokes between swings redraw an identical Svg source (no blow replay). Monster HP unchanged: tune after live play. Tests: finishedWords, counter, a pane fight test (weak swings 4>3>2, no hit back, wrong word no swing, Enter swings, identical scene across a keystroke 2 s later, no loot in freeze; it fails with the unrounded fuse), three recap tests moved (energy now spent by the words, no Attack mid-turn with a recap). 63 pass (3 runs), tsc clean, validate passed. Fighting-freeze scene screenshotted (colour, no board, fuse). Live pane check pending (user).
+- 2026-10-14: UI revamp + Monkeytype typer (user ask: nicer UI; a wrong character must not move the cursor back, like Monkeytype). User picks: Monkeytype default Backspace (current word only); revamp everything below the scene (scene and shop art unchanged). New hooks/typer.tsx `Client` surface module: keys handled on the drawing thread (no round trip, no stale Input `value` resets), posts {id, typed, isDone} to a `ui.message` hook that runs typeRecap/checkRecap with the full text (id = recap id:at, stale posts dropped, data shape checked, 1000 chars max). Input field, withWord and wordNow removed. Pane: typer card (round border in phase colour; header tag + dots + live WPM/acc; footer pays + Skip), result line, Key points card, then the action/loot rows and a shorter hint ("click the words and type to attack"). Words now swing as they are typed, before the line pays (freeze test: 1 energy left, was 0). Tests: new Monkeytype test (space before a word ignored, Backspace cannot reopen a finished word, Ctrl+Backspace clears the word, a wrong letter stays, Backspace mends, red + underlined slip, caret, Enter on a line not started skips nothing); the typing tests drive the typer key by key via `ui.key`. 63 pass (6 runs), tsc clean, validate passed (surface modules: hooks/typer.tsx). Drawn tree dumped and checked. Live pane check pending (user): typer focus by click, paint of borders and caret.
+- 2026-10-14: Recap card dots fix (user report: on a long reply the dots ran outside the round border). Cause: one dot per line, unbounded for the reply phase, in a row that cannot wrap. User pick: show only the dots near the line here + two glyphs only. Now at most DOTS_SHOWN = 10 dots (the line here 5th once past the start), dim "…" either side for the rest, the tag keeps the full count; the line here is ● bold in the phase colour (◉ dropped, a third glyph may draw wider); the dots row wraps as a safety net. New test: a 16-sentence reply shows ten dots and "…", then after six skips "…" both sides with the line here fifth. 64 pass (3 runs), tsc clean, validate passed. Live pane check pending (user).

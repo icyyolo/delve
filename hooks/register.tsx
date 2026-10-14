@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer, ToolCallInput, ToolCallResult } from 'claude-code'
 
-import type { Fighter, Flavor, ItemId, Loot, LootKind, Meta, Mode, Purse, Quest, Rest, Run, Shop, Spell, View, Weapon } from '../types'
+import type { Fighter, Flavor, ItemId, Loot, LootKind, Meta, Mode, Purse, Quest, Recap, Rest, Run, Shop, Spell, View, Weapon } from '../types'
 import {
   FAMILIAR_DAMAGE,
   QUEST_GOLD,
@@ -19,10 +19,12 @@ import {
   turnEnd,
   weaponFor,
 } from './claude'
-import { NO_META, ambush, attack, newRun, readMsFor, strike, swingDamage } from './combat'
+import { NO_META, ambush, attack, counter, newRun, readMsFor, strike, swingDamage } from './combat'
 import { dayOf, flavorPrompt, readLine, roomOf, tableLine } from './flavor'
+import { TLDR_ASK, editedPath, fallbackKeys, fileList, finishedWords, hasRound, liveScore, readRecap, recapPrompt, restLines, score, tldrOf, topLines } from './recap'
 import { BIOME_NAME, LOOT_NAME, SCALE, SCENE_H, SCENE_W, questsSvg, sceneSvg, shopSvg } from './scene'
 import { WARES, diceShop, ownedOf, priceOf, readPick, shopPrompt, shopText } from './shop'
+import type { TyperPost, TyperProps } from './typer'
 
 const PANE = 'depths'
 const TITLE = "Claude's Depths"
@@ -35,6 +37,7 @@ export const DROP_EVERY_MS = 4000
 export const LOOT_MS = 7000
 // After a turn ends: drift this long and the torch burns out, the monster ambushes once.
 export const TORCH_MS = 5 * 60_000
+export const FUSE_STEP_MS = 15_000
 // Energy for coming back after reading the reply, before the torch burns out.
 export const MOMENTUM_ENERGY = 3
 // Mid-turn with energy below the cap, one comes back this often.
@@ -46,6 +49,17 @@ export const SHOP_TIMEOUT_MS = 8000
 export const FLAVOR_TIMEOUT_MS = 4000
 // Haiku calls a day (UTC), shop and flavor together; past it the table answers.
 export const HAIKU_DAILY_CAP = 200
+// The reply recap: Haiku's wait, and what typing it well pays (on top of momentum): the
+// first summary line +2 energy (+1 XP when fast), the others +1, the whole reply +1 XP.
+export const RECAP_TIMEOUT_MS = 6000
+export const RECAP_ACCURACY = 0.9
+export const RECAP_ENERGY = 2
+export const RECAP_ENERGY_MORE = 1
+export const RECAP_WPM = 60
+export const RECAP_XP = 1
+export const RECAP_DONE_XP = 1
+// The most line dots the recap card shows at once.
+export const DOTS_SHOWN = 10
 
 // The base drops, plus the ones the shop unlocked.
 function lootKinds(m: Meta): LootKind[] {
@@ -67,6 +81,8 @@ const tally = atom({ plugin: 'delve', key: 'tally' } as const, {} as Record<stri
 const spell = atom({ plugin: 'delve', key: 'spell' } as const, null as Spell | null)
 const quests = atom({ plugin: 'delve', key: 'quests' } as const, [] as Quest[])
 const context = atom({ plugin: 'delve', key: 'context' } as const, null as number | null)
+const recap = atom({ plugin: 'delve', key: 'recap' } as const, null as Recap | null)
+const edited = atom({ plugin: 'delve', key: 'edited' } as const, [] as string[])
 
 // The running turn's farm timers and the pause's torch timers; a hot reload cancels
 // them with the module, and session.start arms the torch again from `rest`.
@@ -93,6 +109,11 @@ async function isEnabled($: EngineInterface): Promise<boolean> {
 // `/delve haiku off` stops every model call (flavor and shop fall to their tables); stored like `off`.
 async function isHaikuOn($: EngineInterface): Promise<boolean> {
   return (await $.store.get('haikuOn')) !== false
+}
+
+// `/delve tldr on` asks Claude for a TL;DR line under each reply; off by default, stored like `off`.
+async function isTldrOn($: EngineInterface): Promise<boolean> {
+  return (await $.store.get('tldrOn')) === true
 }
 
 // Run and purse live in session state for drawing, and in the store to survive restarts.
@@ -174,6 +195,8 @@ async function gainEnergy($: EngineInterface) {
 }
 
 async function dropLoot($: EngineInterface) {
+  // In the freeze nothing can be grabbed, so nothing drops.
+  if ((await read($, mode)) === 'idle') return
   const kinds = lootKinds(await read($, meta))
   const kind = kinds[Math.floor(Math.random() * kinds.length)]!
   const one: Loot = { id: `${await $.clock.now()}-${Math.random().toString(36).slice(2, 6)}`, kind }
@@ -232,19 +255,21 @@ async function pay($: EngineInterface): Promise<'power' | 'weak'> {
 }
 
 // One swing with the weapon in hand (a weak one gets no weapon); a doppelganger in the way takes it first.
-async function swing($: EngineInterface) {
-  if ((await read($, run)).isDead || (await read($, mode)) === 'idle') return
+// A recap word's swing lands in the freeze too, says nothing (the pictures show it), and
+// draws no hit back: a word typed wrong gives the monster its chance instead.
+async function swing($: EngineInterface, isWord = false) {
+  if ((await read($, run)).isDead || (!isWord && (await read($, mode)) === 'idle')) return
   const isWeak = (await pay($)) === 'weak'
   const m = await read($, meta)
   const w = await read($, weapon)
-  const edge = isWeak ? { isWeak } : WEAPONS[w].edge
+  const edge = { ...(isWeak ? { isWeak } : WEAPONS[w].edge), ...(isWord && { isRanged: true }) }
   const foe = (await read($, fighters)).find(f => f.side === 'rival')
   if (foe) return hitRival($, foe, swingDamage(Math.random, m, edge))
   const was = await read($, run)
   const now = await changeRun($, r => {
     const s = attack(r, Math.random, m, edge)
     // Plain hits show only as pictures; a weak one says why it was weak.
-    return isWeak && s.last && !s.last.slain && !s.isDead ? { ...s, last: { ...s.last, note: `Weak swing, no energy: ${blowLine(s)}` } } : s
+    return isWeak && !isWord && s.last && !s.last.slain && !s.isDead ? { ...s, last: { ...s.last, note: `Weak swing, no energy: ${blowLine(s)}` } } : s
   })
   if (w === 'portal' && !isWeak) await dropLoot($)
   if (now.floor !== was.floor) await slain($)
@@ -379,6 +404,178 @@ async function askHaiku($: EngineInterface, prompt: string, maxTokens: number, t
   }
 }
 
+// The reply's recap: shown at once with the edited files. The summary lines lead with
+// Claude's own TL;DR line when it wrote one (no Haiku call); else Haiku writes them and the
+// key points while the pane says "summarising", and the reply's best sentences stand in
+// when Haiku gives nothing. The whole reply follows them. A recap for a turn that already
+// gave way to the next is dropped.
+async function summarise($: EngineInterface, id: number, answer: string) {
+  const files = fileList(await read($, edited))
+  const base: Recap = { id, isPending: false, lines: [], top: 0, at: 0, accuracies: [], keys: fallbackKeys(answer), files, typed: '', startedAt: null }
+  if (!hasRound(answer)) {
+    await update($, recap, () => base)
+    return
+  }
+  const queue = (picks: (string | null)[]) => {
+    const top = topLines(answer, picks)
+    return { lines: [...top, ...restLines(answer, top)], top: top.length }
+  }
+  const tldr = tldrOf(answer)
+  if (tldr) {
+    await update($, recap, () => ({ ...base, ...queue([tldr]) }))
+    return
+  }
+  await update($, recap, () => ({ ...base, keys: [], isPending: true }))
+  const said = await askHaiku($, recapPrompt(answer), 220, RECAP_TIMEOUT_MS)
+  const got = said ? readRecap(said) : undefined
+  const done = { ...queue(got?.lines ?? []), keys: got?.keys ?? base.keys }
+  await update($, recap, r => (r?.id === id ? { ...r, ...done, isPending: false } : r))
+}
+
+// Typing is the fight: each recap word finished right swings, each one wrong gives the
+// monster its chance to hit back.
+async function fight($: EngineInterface, words: boolean[]) {
+  for (const isRight of words) {
+    if (isRight) await swing($, true)
+    else {
+      const m = await read($, meta)
+      await changeRun($, r => counter(r, Math.random, m))
+    }
+  }
+}
+
+// The typer's address for the line up now: a new reply or a new line starts it afresh.
+const typerId = (r: Recap) => `${r.id}:${r.at}`
+
+// Stray and doubled spaces dropped from what the typer sent.
+const tidy = (typed: string) => typed.replace(/^ +/, '').replace(/ {2,}/g, ' ')
+
+// What the typer holds, after each key: the clock starts at the first one, and a space
+// finishes a word.
+async function typeRecap($: EngineInterface, text: string, id?: string) {
+  const now = await $.clock.now()
+  let words: boolean[] = []
+  await update($, recap, r => {
+    if (!r?.lines.length || (id && typerId(r) !== id)) return r
+    const typed = tidy(text)
+    words = finishedWords(r.lines[r.at % r.lines.length]!, r.typed, typed)
+    return { ...r, typed, startedAt: r.startedAt ?? now }
+  })
+  await fight($, words)
+}
+
+// On to the next line, the one just left scored (a skip scores 0). Finishing the reply's
+// last line once settles the whole-reply bonus; after that the lines come round again.
+function nextLine(r: Recap, got: { accuracy: number; wpm: number } | undefined): Recap {
+  const isDone = r.at >= r.lines.length
+  return {
+    ...r,
+    at: r.at + 1,
+    accuracies: isDone ? r.accuracies : [...r.accuracies, got?.accuracy ?? 0],
+    best: isDone && got ? Math.max(r.best ?? 0, got.wpm) : r.best,
+    last: got,
+    typed: '',
+    startedAt: null,
+  }
+}
+
+// The whole reply's average accuracy past the summary lines, once its last line is left.
+const restAverage = (r: Recap) => {
+  const rest = r.accuracies.slice(r.top)
+  return rest.length ? rest.reduce((a, b) => a + b, 0) / rest.length : 0
+}
+
+// What leaving a line pays: a summary line typed accurately pays energy (the first one XP
+// too when fast); leaving the reply's last line pays XP when the rest averaged accurately.
+async function payLine($: EngineInterface, was: Recap, now: Recap, got: { accuracy: number; wpm: number } | undefined) {
+  if (got && was.at < was.top) {
+    const said = `Line ${was.at + 1} typed: ${Math.round(got.accuracy * 100)}% at ${got.wpm} WPM.`
+    const pays = was.at === 0 ? RECAP_ENERGY : RECAP_ENERGY_MORE
+    if (got.accuracy < RECAP_ACCURACY) {
+      void $.ui.toast(`${said} ${RECAP_ACCURACY * 100}% earns +${pays} energy.`)
+    } else {
+      const isFast = was.at === 0 && got.wpm >= RECAP_WPM
+      await changePurse($, p => ({ ...p, energy: p.energy + pays, xp: p.xp + (isFast ? RECAP_XP : 0) }))
+      void $.ui.toast(`${said} +${pays} energy${isFast ? `, +${RECAP_XP} XP` : ''}.`)
+    }
+  }
+  if (now.at !== now.lines.length || now.lines.length <= now.top) return
+  const avg = restAverage(now)
+  const said = `Reply typed through: ${Math.round(avg * 100)}% on average.`
+  if (avg < RECAP_ACCURACY) {
+    void $.ui.toast(`${said} ${RECAP_ACCURACY * 100}% earns +${RECAP_DONE_XP} XP.`)
+    return
+  }
+  await changePurse($, p => ({ ...p, xp: p.xp + RECAP_DONE_XP }))
+  void $.ui.toast(`${said} +${RECAP_DONE_XP} XP.`)
+}
+
+// The recap's phase as the pane tags it: where the line sits and what typing it pays.
+function phaseOf(r: Recap): { tag: string; color: string; note: string } {
+  const pct = `${RECAP_ACCURACY * 100}%`
+  if (r.at < r.top) {
+    const pays = r.at === 0 ? RECAP_ENERGY : RECAP_ENERGY_MORE
+    return {
+      tag: `SUMMARY ${r.at + 1}/${r.top}`,
+      color: 'suggestion',
+      note: `${pct} pays +${pays} energy${r.at === 0 ? `, ${RECAP_WPM}+ WPM +${RECAP_XP} XP` : ''}`,
+    }
+  }
+  if (r.at < r.lines.length) {
+    return { tag: `REPLY ${r.at - r.top + 1}/${r.lines.length - r.top}`, color: 'claude', note: `${pct} on average to the end pays +${RECAP_DONE_XP} XP` }
+  }
+  const avg = r.lines.length > r.top ? ` · reply ${Math.round(restAverage(r) * 100)}% on average` : ''
+  return {
+    tag: `PRACTICE ${(r.at % r.lines.length) + 1}/${r.lines.length}`,
+    color: 'subtle',
+    note: `unpaid, for speed${avg}${r.best ? ` · best ${r.best} WPM` : ''}`,
+  }
+}
+
+// The line just left, as the pane tells it: its score or a skip, and what it earned or
+// would have; leaving the reply's last line tells the whole-reply bonus too.
+function resultOf(r: Recap): { isGood: boolean; text: string } | undefined {
+  if (r.at === 0) return undefined
+  const was = r.at - 1
+  const pct = `${RECAP_ACCURACY * 100}%`
+  const name = `Line ${(was % r.lines.length) + 1}`
+  const got = r.last
+  let isGood = !!got && got.accuracy >= RECAP_ACCURACY
+  let text = got ? `${name}: ${Math.round(got.accuracy * 100)}% · ${got.wpm} WPM` : `${name} skipped`
+  if (got && was < r.top) {
+    const pays = was === 0 ? RECAP_ENERGY : RECAP_ENERGY_MORE
+    const isFast = was === 0 && got.wpm >= RECAP_WPM
+    text += isGood ? ` · +${pays} energy${isFast ? `, +${RECAP_XP} XP` : ''}` : ` · ${pct} pays +${pays} energy`
+  }
+  if (was === r.lines.length - 1 && r.lines.length > r.top) {
+    const avg = restAverage(r)
+    isGood = avg >= RECAP_ACCURACY
+    text += ` · reply ${Math.round(avg * 100)}% on average · ${isGood ? `+${RECAP_DONE_XP} XP` : `${pct} pays +${RECAP_DONE_XP} XP`}`
+  }
+  return { isGood, text }
+}
+
+// The typer ends the line: it scores and moves on, the last word finished too; Skip moves on scoring it 0.
+async function checkRecap($: EngineInterface, text: string | null, id?: string) {
+  const now = await $.clock.now()
+  let was: Recap | undefined
+  let got: Recap['last']
+  let words: boolean[] = []
+  const moved = await update($, recap, r => {
+    if (!r?.lines.length || (id && typerId(r) !== id)) return r
+    was = r
+    if (text !== null) {
+      const line = r.lines[r.at % r.lines.length]!
+      const typed = tidy(text)
+      words = finishedWords(line, r.typed, typed && !typed.endsWith(' ') ? `${typed} ` : typed)
+      got = score(line, typed, now - (r.startedAt ?? now))
+    }
+    return nextLine(r, got)
+  })
+  if (was && moved) await payLine($, was, moved, got)
+  await fight($, words)
+}
+
 // The current room's flavor line, written once per room; a line for a room the hero
 // has already left is dropped.
 async function describeRoom($: EngineInterface) {
@@ -470,7 +667,7 @@ function noteLine(r: Run): string | undefined {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'delve', description: "Claude's Depths: /delve opens the pane, /delve off turns it off, /delve shop spends XP, /delve haiku toggles Haiku lines" })
+    await $.command.register({ name: 'delve', description: "Claude's Depths: /delve opens the pane, /delve off turns it off, /delve shop spends XP, /delve haiku toggles Haiku lines, /delve tldr asks Claude for TL;DR lines" })
     await loadSaved($)
     regenTimer?.cancel()
     regenTimer = $.clock.every(REGEN_MS, () => void regen($))
@@ -502,8 +699,17 @@ export const register: Register = on => {
       await $.store.set('haikuOn', isOn)
       return {
         text: isOn
-          ? 'Haiku lines on: flavor and shop picks use Claude Haiku (capped per day).'
-          : 'Haiku lines off: no model calls, flavor and shop use the built-in tables. /delve haiku turns them back on.',
+          ? 'Haiku lines on: flavor, shop picks and reply recaps use Claude Haiku (capped per day).'
+          : "Haiku lines off: no model calls; flavor and shop use the built-in tables, recaps the reply's own sentences. /delve haiku turns them back on.",
+      }
+    }
+    if (verb === 'tldr' && (item === undefined || item === 'on' || item === 'off')) {
+      const isOn = item === undefined ? !(await isTldrOn($)) : item === 'on'
+      await $.store.set('tldrOn', isOn)
+      return {
+        text: isOn
+          ? 'TL;DR on: Claude ends each longer reply with a one-line TL;DR, and the recap types it (about 20 tokens a reply, no Haiku call).'
+          : "TL;DR off: Claude's replies are left as they are; the recap goes back to Haiku or the reply's best sentence.",
       }
     }
     if (arg === 'off') {
@@ -512,7 +718,7 @@ export const register: Register = on => {
       void $.ui.status(undefined)
       return { text: "Claude's Depths is off. /delve turns it back on." }
     }
-    if (arg !== '' && arg !== 'on') return { text: 'Usage: /delve [on|off|shop|buy <id>|haiku [on|off]]' }
+    if (arg !== '' && arg !== 'on') return { text: 'Usage: /delve [on|off|shop|buy <id>|haiku [on|off]|tldr [on|off]]' }
     await $.store.set('enabled', true)
     const opened = await $.ui.open({ id: PANE, title: TITLE })
     await showStatus($)
@@ -525,6 +731,8 @@ export const register: Register = on => {
     stopFarm()
     await endRest($)
     await update($, purse, p => ({ ...p, gained: 0 }))
+    // The last reply's recap stays up, typeable while Claude works, until this turn's lands.
+    await update($, edited, () => [])
     await update($, mode, () => 'combat')
     await showStatus($)
     farmTimers.push($.clock.after(FARM_AFTER_MS, () => void startFarm($)))
@@ -545,6 +753,8 @@ export const register: Register = on => {
     await gainEnergy($)
     await forge($, e.tool, result)
     await track($, e, result)
+    const path = !result.deny && !result.isError ? editedPath(e as unknown as Record<string, unknown>) : undefined
+    if (path) await update($, edited, list => (list.includes(path) ? list : [...list, path]))
     // A quiet gap before the next call (Claude thinking or writing) farms too.
     farmTimers.push($.clock.after(FARM_AFTER_MS, () => void startFarm($)))
 
@@ -571,6 +781,13 @@ export const register: Register = on => {
     return done
   }).catch(($, e, next) => next(e))
 
+  // `/delve tldr on`: one section at the end of the system prompt asks Claude for a TL;DR line.
+  on('prompt.compose', async ($, e, next) => {
+    const composed = await next(e)
+    if (!(await isTldrOn($))) return composed
+    return { sections: [...composed.sections, { id: 'delve:tldr', text: TLDR_ASK, scope: 'session' as const }] }
+  }).catch(($, e, next) => next(e))
+
   // A skill is a spell: the next few swings cost no energy.
   on('skill.prompt', async ($, e, next) => {
     const said = await next(e)
@@ -593,8 +810,18 @@ export const register: Register = on => {
     if (e.reason !== 'answer') await changeRun($, r => turnEnd(r, e.reason))
     await measureTorch($)
     await showStatus($)
+    // In the background: the turn ends now, the recap lands when Haiku answers; a failure shows none.
+    void summarise($, pause.endedAt, e.answer).catch(() => undefined)
 
     return next(e)
+  })
+
+  // What the typer sent: data from code, so held to its shape; a line already left is stale.
+  on('ui.message', { requestId: PANE }, async ($, e, next) => {
+    const d = e.data as Partial<TyperPost> | null
+    if (e.element !== 'typer' || typeof d?.id !== 'string' || typeof d.typed !== 'string' || d.typed.length > 1000) return next(e)
+    await (d.isDone ? checkRecap($, d.typed, d.id) : typeRecap($, d.typed, d.id))
+    return {}
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
@@ -602,7 +829,7 @@ export const register: Register = on => {
       const { Text } = $.ui.resolve(e)
       return <Text dimColor>Claude's Depths draws on the desktop app only.</Text>
     }
-    const { Box, Button, Text, Svg } = $.ui.resolve(e)
+    const { Box, Button, Text, Svg, Client } = $.ui.resolve(e)
     if ((await read($, view)) === 'shop') {
       // Only the shop view reads the purse, so tool calls redraw the scene no more than before.
       const { xp } = await read($, purse)
@@ -657,9 +884,22 @@ export const register: Register = on => {
     const pct = await read($, context)
     const dark = darkness(pct)
     const pause = await read($, rest)
+    const rc = await read($, recap)
+    const isTyping = !!rc?.lines.length
+    const line = rc?.lines[rc.at % rc.lines.length]
+    // Read as a keystroke redraws the pane: no clock of its own.
+    const live = line && rc?.startedAt != null && rc.typed ? liveScore(line, rc.typed, (await $.clock.now()) - rc.startedAt) : undefined
+    const phase = rc && line ? phaseOf(rc) : undefined
+    const result = rc && line ? resultOf(rc) : undefined
+    // The fuse's time left in whole steps, so keystrokes between swings redraw the same scene
+    // and its last blow does not play again.
     const frozen =
       m === 'idle' && !r.isDead
-        ? { leftMs: pause && !pause.isOut ? TORCH_MS - ((await $.clock.now()) - pause.endedAt) : 0, isOut: !!pause?.isOut }
+        ? {
+            leftMs: pause && !pause.isOut ? Math.ceil((TORCH_MS - ((await $.clock.now()) - pause.endedAt)) / FUSE_STEP_MS) * FUSE_STEP_MS : 0,
+            isOut: !!pause?.isOut,
+            isFighting: isTyping,
+          }
         : undefined
     const where = BIOME_NAME[r.biome]
     // One line of words: an event worth saying, else the room's Haiku line.
@@ -710,11 +950,82 @@ export const register: Register = on => {
             {said}
           </Text>
         )}
-        <Box flexDirection="row" flexWrap="wrap" gap={1}>
+        {rc?.isPending && (
+          <Text italic dimColor>
+            Summarising Claude's reply…
+          </Text>
+        )}
+        {/* Claude's last reply, a line at a time, typed Monkeytype's way in a card: in the freeze and while Claude works. */}
+        {rc && line && phase && (
+          <Box key="recap" flexDirection="column" borderStyle="round" borderColor={phase.color} paddingX={1}>
+            {/* The phase tag, a dot per line (green paid, red short or skipped, hollow to come), the live score. */}
+            <Box flexDirection="row" justifyContent="space-between" columnGap={2}>
+              <Box flexDirection="row" columnGap={1}>
+                <Text bold color={phase.color}>
+                  {phase.tag}
+                </Text>
+                <Box flexDirection="row" flexWrap="wrap">
+                  {/* Only the dots near the line here, so a long reply never runs past the border; the tag holds the count.
+                      Two glyphs only, the line here in the phase colour, as a third glyph may draw wider. */}
+                  {(() => {
+                    const here = rc.at % rc.lines.length
+                    const from = Math.max(0, Math.min(here - 4, rc.lines.length - DOTS_SHOWN))
+                    const to = Math.min(rc.lines.length, from + DOTS_SHOWN)
+                    return [
+                      from > 0 && <Text dimColor>…</Text>,
+                      ...rc.lines.slice(from, to).map((_, k) => {
+                        const i = from + k
+                        const isHere = i === here
+                        const acc = rc.accuracies[i]
+                        return (
+                          <Text
+                            bold={isHere}
+                            color={isHere ? phase.color : acc === undefined ? undefined : acc >= RECAP_ACCURACY ? 'success' : 'error'}
+                            dimColor={!isHere && acc === undefined}
+                          >
+                            {(i === rc.top && i > 0 ? ' ' : '') + (isHere || acc !== undefined ? '●' : '○')}
+                          </Text>
+                        )
+                      }),
+                      to < rc.lines.length && <Text dimColor>…</Text>,
+                    ]
+                  })()}
+                </Box>
+              </Box>
+              {live && (live.accuracy !== null || live.wpm !== null) && (
+                <Text bold>{[live.wpm !== null && `${live.wpm} WPM`, live.accuracy !== null && `${Math.round(live.accuracy * 100)}% acc`].filter(Boolean).join(' · ')}</Text>
+              )}
+            </Box>
+            <Box key="typer-row" marginY={1}>
+              <Client key="typer" module="./typer.tsx" props={{ id: typerId(rc), line, typed: rc.typed } satisfies TyperProps} flexGrow={1} />
+            </Box>
+            <Box flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={2}>
+              <Text dimColor>{phase.note}</Text>
+              <Button key="skip" label="Skip line" dimColor onPress={() => void checkRecap($, null)} />
+            </Box>
+          </Box>
+        )}
+        {result && (
+          <Text color={result.isGood ? 'success' : 'error'}>
+            {result.isGood ? '✓' : '✗'} {result.text}
+          </Text>
+        )}
+        {rc && (rc.keys.length > 0 || rc.files.length > 0) && (
+          <Box key="keys" flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
+            <Text bold>Key points</Text>
+            {rc.keys.map(k => (
+              <Text>• {k}</Text>
+            ))}
+            {rc.files.length > 0 && <Text dimColor>• Files changed: {rc.files.join(', ')}</Text>}
+          </Box>
+        )}
+        {/* Attack (or New run) and Shop always lead; the loot grabs wrap on the rows below. With a recap to type, typing is the attack. */}
+        <Box key="actions" flexDirection="row" gap={1}>
           {r.isDead ? (
             <Button key="new-run" variant="primary" hotkey="n" label="New run [N]" onPress={() => void startOver($)} />
           ) : (
-            m !== 'idle' && (
+            m !== 'idle' &&
+            !isTyping && (
               <Button
                 key="attack"
                 variant="primary"
@@ -724,13 +1035,22 @@ export const register: Register = on => {
               />
             )
           )}
-          {!r.isDead &&
-            m !== 'idle' &&
-            drops.map((one, i) => (
-              <Button key={one.id} hotkey={String(i + 1)} label={`Grab ${LOOT_NAME[one.kind]} [${i + 1}]`} onPress={() => void grab($, one)} />
-            ))}
           <Button key="shop" hotkey="s" label="Shop [S]" dimColor onPress={() => void openShop($)} />
         </Box>
+        {!r.isDead && m !== 'idle' && drops.length > 0 && (
+          <Box key="loot" flexDirection="row" flexWrap="wrap" gap={1}>
+            {drops.map((one, i) => (
+              <Button key={one.id} hotkey={String(i + 1)} label={`Grab ${LOOT_NAME[one.kind]} [${i + 1}]`} onPress={() => void grab($, one)} />
+            ))}
+          </Box>
+        )}
+        {/* Hotkeys reach the pane only while it holds the keyboard, never from the prompt; the typer takes keys once clicked. */}
+        <Text dimColor>
+          {e.props.isFocused
+            ? `Keys on: ${isTyping ? '' : 'A attack · '}S shop · 1-9 grab · Esc back to the prompt`
+            : `For keys, click the pane or press ctrl+x tab: ${isTyping ? '' : 'A attack · '}S shop · 1-9 grab`}
+          {isTyping ? ' · click the words and type to attack' : ''}
+        </Text>
         {board.some(q => !q.isDone) && (
           <Svg
             source={questsSvg(board)}

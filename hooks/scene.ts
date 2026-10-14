@@ -240,8 +240,9 @@ export type Cast = {
   weapon?: Weapon
   spell?: Spell | null
   context?: number | null
-  // leftMs <= 0: no pause running (a fresh session), so no fuse.
-  frozen?: { leftMs: number; isOut: boolean }
+  // leftMs <= 0: no pause running (a fresh session), so no fuse. isFighting: a recap to type,
+  // so the room fights on in colour with no board over it, only the fuse.
+  frozen?: { leftMs: number; isOut: boolean; isFighting?: boolean }
 }
 
 const BACK_ROW = ['wall', 'wall', 'wall', 'door', 'wall', 'wall_alt', 'stairs'] as const
@@ -255,7 +256,8 @@ const HUD_H = 9
 // flinches if hit back. A quake shakes the room once; the dark closes in on the hero.
 // A HUD rims the room (hearts and gold on top; weapon, spells, floor and torch below),
 // damage pops up over whoever took it, a kill bursts and pays its gold into the HUD, a new
-// floor wipes in its banner, and a frozen room greys and holds still while the torch fuse burns.
+// floor wipes in its banner, and a frozen room greys and holds still while the torch fuse burns
+// (unless a recap is there to type: then the room fights on under the fuse).
 export function sceneSvg(run: Run, isFarming = false, drops: readonly Loot[] = [], cast: Cast = {}): string {
   const tiles = new Map<string, string>()
   const tile = (name: string) => SPRITES[`${run.biome}_${name}`]?.[0] ?? SPRITES[`${run.biome}_wall`]?.[0]
@@ -266,7 +268,7 @@ export function sceneSvg(run: Run, isFarming = false, drops: readonly Loot[] = [
       if (grid) addRuns(tiles, grid, x * T, y * T)
     }
   }
-  const isStill = !!cast.frozen
+  const isStill = !!cast.frozen && !cast.frozen.isFighting
   const loop = (name: string, ox: number, oy: number) => (isStill ? firstFrame(name, ox, oy) : animated(name, ox, oy))
   const standY = (ROOM_H - 2) * T + 4
   const monX = 4 * T + 8
@@ -381,15 +383,15 @@ export function sceneSvg(run: Run, isFarming = false, drops: readonly Loot[] = [
   if (run.isDead) {
     over.push(`<rect width="${SCENE_W}" height="${SCENE_H}" fill="${INK}" opacity="0.45"/>`, board('YOU FELL', `FLOOR ${run.floor} · ${run.gold} GOLD`, 'r'))
   } else if (cast.frozen) {
-    const { leftMs, isOut } = cast.frozen
-    over.push(`<rect width="${SCENE_W}" height="${SCENE_H}" fill="${INK}" opacity="${isOut ? 0.4 : 0.2}"/>`)
-    if (isOut) over.push(board('TORCH OUT', 'TYPE A PROMPT TO RELIGHT', 'r'))
-    else if (leftMs <= 0) over.push(board('YOUR MOVE', 'SEND A PROMPT', 'y'))
+    const { leftMs, isOut, isFighting } = cast.frozen
+    if (!isFighting) over.push(`<rect width="${SCENE_W}" height="${SCENE_H}" fill="${INK}" opacity="${isOut ? 0.4 : 0.2}"/>`)
+    if (isOut) over.push(isFighting ? '' : board('TORCH OUT', 'TYPE A PROMPT TO RELIGHT', 'r'))
+    else if (leftMs <= 0) over.push(isFighting ? '' : board('YOUR MOVE', 'SEND A PROMPT', 'y'))
     else {
       const w0 = Math.round((Math.max(0, leftMs) / (5 * 60_000)) * SCENE_W)
       const dur = `${Math.max(0.1, leftMs / 1000)}s`
       over.push(
-        board('YOUR MOVE', 'READ THE REPLY', 'y'),
+        isFighting ? '' : board('YOUR MOVE', 'READ THE REPLY', 'y'),
         tip(
           `The torch burns out in ${Math.max(1, Math.ceil(leftMs / 60_000))} min`,
           `<rect y="${HUD_H}" width="${w0}" height="2" fill="${hex('o')}"><animate attributeName="width" from="${w0}" to="0" dur="${dur}" fill="freeze"/></rect><rect x="${w0 - 1}" y="${HUD_H - 1}" width="2" height="4" fill="${hex('y')}"><animate attributeName="x" from="${w0 - 1}" to="-2" dur="${dur}" fill="freeze"/></rect>`,
