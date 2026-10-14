@@ -85,7 +85,9 @@ export type Quest = { id: string; text: string; isDone: boolean }
 // order; key points, the files Claude edited, and the typing so far. `at` is the line being
 // typed; from `lines.length` on the reply is done and the lines come round again, unpaid.
 // `accuracies` holds each finished line's (a skip counts 0), `last` the last line's score,
-// `best` the best WPM retyping after the reply is done.
+// `best` the best WPM retyping after the reply is done. A live recap (`isLive`) is Claude's
+// words between its tool calls while it works, lore lines (at the indices in `lore`) filling
+// in when it says nothing; it never runs out and never comes round again.
 export type Recap = {
   id: number
   isPending: boolean
@@ -99,6 +101,8 @@ export type Recap = {
   startedAt: number | null
   last?: { accuracy: number; wpm: number }
   best?: number
+  isLive?: boolean
+  lore?: number[]
 }
 
 declare module 'claude-code' {
@@ -122,6 +126,8 @@ declare module 'claude-code' {
       // The context window's fill at the last turn end, 0-100; the torch dims with it.
       context: number | null
       recap: Recap | null
+      // Claude's words between its tool calls this turn, as lines; the pane never reads it.
+      heard: string[]
       // Files Claude's Edit/Write calls touched this turn; the pane never reads it.
       edited: string[]
     }

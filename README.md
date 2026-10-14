@@ -68,7 +68,8 @@ To load a source checkout in every session, add the folder to `CLAUDE_CODE_PLUGI
 | `/delve` | Open the pane (turns the game back on if it was off) |
 | `/delve off` | Close the pane and keep it off across restarts |
 | `/delve shop` | Turn the pane to the shop and print the wares as text |
-| `/delve buy <id>` | Buy a ware with XP, e.g. `/delve buy vitality` |
+| `/delve debug` | Show which build runs and the typing recap's state, for bug reports |
+| `/delve buy <id>` | Buy a ware with XP, e.g. `/delve buy vitality`, or a run good with gold: `potion`, `scroll`, `key` |
 | `/delve tldr [on\|off]` | Ask Claude to end each longer reply with a one-line `TL;DR:`, which the recap types as written (off by default; about 20 tokens a reply; kept across restarts) |
 | `/delve haiku [on\|off]` | Toggle Haiku flavor lines, shop picks and reply recaps; off = no model calls, built-in tables and the reply's own sentences instead (kept across restarts) |
 
@@ -92,6 +93,7 @@ which state it is in), and Esc hands the keyboard back to the prompt.
 |---|---|
 | `A` | Attack: 1 energy (free while a spell lasts) for a full swing; at 0 energy a weak swing: 1 damage, no crit, no weapon |
 | `1` `2` `3` | Grab that loot drop (numbers are drawn above the drops) / buy that ware in the shop |
+| `4` `5` `6` | Buy a run good in the shop: red potion, scroll, key |
 | `S` | Open the shop |
 | `B` | Back from the shop |
 | `N` | Start a new run after death |
@@ -159,6 +161,12 @@ there, since loot cannot be grabbed until Claude works again). The lines, in ord
   pays **+1 XP** once, however long the reply.
 - **Then the lines come round again** for speed, unpaid, with your best WPM shown. Practice lines don't attack, so the Attack button comes back mid-turn.
 
+**While Claude works**, with no reply lines left to type (a session's first turn, or only practice left), the
+typer goes **LIVE**: Claude's own words between its tool calls ("I'll check the parser first…") come up as lines as
+it says them. When it has said nothing new, a **LORE** line from the dungeon fills in, to type or skip; the Attack
+button stays beside it. Live and lore words swing like any typed word but pay no energy or XP, and they go when
+the turn ends.
+
 Each line pays once, on top of momentum; skipping costs nothing. The recap stays up after you send your next
 prompt, so you can keep typing while Claude works (the pane's keys stay on the shop and loot until you click
 the words) until the new reply's recap replaces it. Where the summary lines come from, first that answers:
@@ -212,6 +220,11 @@ run, Claude Haiku picks 3 wares and a one-line pitch (8 s timeout; dice pick if 
 | Heap Caverns | unlocks the second biome | 1 | 40 XP |
 | Deep dwellers | mimics and golems appear | 1 | 50 XP |
 
+**Run goods.** Gold is the run's own money. A gold shelf under the wares always holds three goods, used at
+once and gone when the run ends: **Red potion** +3 HP (6 gold), **Scroll** 3 free swings (10 gold), **Key** skip
+the monster and drop a floor, no gold for it (12 gold). When the hero falls, New run turns the leftover gold to
+XP at 5 gold = 1 XP, so a rich run still pays toward the permanent wares.
+
 **Flavor.** One Haiku line per room (4 s timeout, at most 120 characters), with 3 hand-written lines per
 monster as the fallback. Haiku calls (flavor + shop + recap) are capped at 200 per UTC day, and `/delve haiku off` stops them.
 
@@ -264,7 +277,7 @@ hooks/recap.ts               reply recap: lines to type, key points, scoring, le
 hooks/typer.tsx              the Monkeytype-style typer, a Client surface module (keys handled in the pane)
 hooks/sprites.gen.ts         GENERATED from assets/ by tools/sprites.mjs, do not edit
 types/index.d.ts             state contract (every value the plugin keeps)
-tests/delve.test.tsx         64 tests
+tests/delve.test.tsx         70 tests
 tools/sprites.mjs            sprite validator, PNG contact sheets, preview page, generator
 assets/                      palette, sprite manifest, style brief, sprite JSON, previews
 docs/gallery.jpg             rendered pane states
@@ -299,7 +312,7 @@ plugin (it is git-ignored):
 npx -y -p typescript@5.6.3 tsc -p .
 ```
 
-**Current results:** validate passes (one warning: no author field, left out on purpose), 64/64 tests pass,
+**Current results:** validate passes (one warning: no author field, left out on purpose), 70/70 tests pass,
 sprite check passes, the largest scene is about 91k of the 131k-character `Svg` limit.
 
 ## Status and known issues

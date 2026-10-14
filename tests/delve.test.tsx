@@ -111,6 +111,8 @@ function world(on: On, saved: Record<string, unknown> = {}, answer?: (e: Record<
   const state: Record<string, unknown> = {}
   const status: (string | undefined)[] = []
   const toasts: string[] = []
+  // The recap as the engine's own turn end (beneath the mod) finds it.
+  const atEnd: unknown[] = []
   mock.store(on, saved)
   on('ui.toast', (_$, e) => {
     toasts.push(e.text)
@@ -128,9 +130,12 @@ function world(on: On, saved: Record<string, unknown> = {}, answer?: (e: Record<
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   on('ui.open', () => ({ value: { isPlaced: true as const } }))
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
-  on('turn.complete', (_$, e) => ({ text: e.answer }))
+  on('turn.complete', (_$, e) => {
+    atEnd.push(state.recap)
+    return { text: e.answer }
+  })
   on('tool.call', (_$, e) => (answer?.(e as unknown as Record<string, unknown>) ?? { deny: 'the test engine runs no tools' }) as { deny: string })
-  return { clock: mock.clock(on), state, status, toasts }
+  return { clock: mock.clock(on), state, status, toasts, atEnd }
 }
 
 // One Bash call by id; typed loosely, since the full tool union is too deep for tsc here.
@@ -461,7 +466,7 @@ describe('/delve shop', () => {
     on('model.complete', () => ({ value: { isAnswered: false as const, reason: 'aborted' as const, usage: USAGE } }))
     const text = (await $.command.run({ ...RUN, command: 'delve', args: 'shop' })).text ?? ''
     expect(PITCHES.some(p => text.includes(p))).toBe(true)
-    expect(text.match(/^- /gm)).toHaveLength(STOCK_SIZE)
+    expect(text.match(/^- .* XP$/gm)).toHaveLength(STOCK_SIZE)
   })
 })
 
@@ -497,6 +502,61 @@ describe('shop view', () => {
 
     await ui.press({ key: 'back' })
     expect(await pictured(ui, /Floor 1\./)).toBe(true)
+    await ui.unmount()
+  })
+})
+
+describe('run goods', () => {
+  test('gold buys goods for the run: a potion heals, a scroll gives free swings, a key skips the monster', async ($, on) => {
+    const { state } = world(on, { flavor: SEEN, run: { ...newRun(), hp: 5, gold: 42 } })
+    on('model.complete', () => ({ value: { isAnswered: true as const, text: 'A door.', usage: USAGE } }))
+    await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+    const buy = async (id: string) => (await $.command.run({ ...RUN, command: 'delve', args: `buy ${id}` })).text
+
+    expect(await buy('potion')).toMatch(/Bought Red potion.*36 gold left/)
+    expect((state.run as Run).hp).toBe(8)
+    await buy('potion')
+    expect((state.run as Run).hp).toBe(10)
+    expect(await buy('potion')).toMatch(/HP is full/)
+    expect((state.run as Run).gold).toBe(30)
+
+    await buy('scroll')
+    expect(state.spell).toEqual({ skill: 'scroll', swings: 3 })
+
+    expect(await buy('key')).toMatch(/Bought Key.*8 gold left/)
+    const r = state.run as Run
+    expect([r.floor, r.hp, r.gold]).toEqual([2, 10, 8])
+    expect(r.last?.note).toMatch(/key opened a way past the slime: down to floor 2/)
+    expect(await buy('key')).toMatch(/Key costs 12 gold; you hold 8/)
+
+    const text = (await $.command.run({ ...RUN, command: 'delve', args: 'shop' })).text
+    expect(text).toMatch(/You hold 8 gold/)
+    expect(text).toMatch(/- key: Key \(skip this monster, down a floor\), 12 gold/)
+  })
+
+  test('the shop view has a gold shelf; the fallen buy nothing, and New run cashes their gold out as XP', async ($, on) => {
+    const { toasts } = world(on, { flavor: SEEN, run: { ...newRun(), gold: 7 }, shop: { stock: ['shield'], pitch: 'Hi.' } })
+    await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    await ui.press({ key: 'shop' })
+    expect(await pictured(ui, /Run goods · 7 gold\. Red potion: \+3 HP, 6 gold/)).toBe(true)
+    expect(await ui.find({ type: 'Button', text: /Buy Key · 12 gold \[6\]/ })).toBeDefined()
+    await ui.press({ key: 'good-potion' })
+    expect(toasts.at(-1)).toMatch(/HP is full/)
+    await ui.press({ key: 'good-scroll' })
+    expect(toasts.at(-1)).toMatch(/Scroll costs 10 gold; you hold 7/)
+    await ui.unmount()
+  })
+
+  test('New run turns the fallen run\'s gold to XP, five gold each', async ($, on) => {
+    const { state, toasts } = world(on, { flavor: SEEN, run: { ...newRun(), floor: 6, hp: 0, isDead: true, gold: 23 }, purse: { energy: 0, xp: 2, gained: 0 } })
+    await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+    expect((await $.command.run({ ...RUN, command: 'delve', args: 'buy potion' })).text).toMatch(/fallen buy nothing/)
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    await ui.press({ key: 'new-run' })
+    expect((state.purse as { xp: number }).xp).toBe(6)
+    expect(toasts).toContain('Cashed out 23 gold: +4 XP.')
+    expect(state.run).toEqual(newRun())
     await ui.unmount()
   })
 })
@@ -847,7 +907,7 @@ describe("Claude's own work", () => {
     expect(sceneSvg(kill, false, drops, { ...hud, ally: 'golem', frozen: { leftMs: 60_000, isOut: false } }).length).toBeLessThan(SVG_LIMIT)
     const board = Array.from({ length: 9 }, (_, i) => ({ id: `${i}`, text: 'A long quest line that runs past the edge of the parchment', isDone: i % 2 === 0 }))
     expect(questsSvg(board).length).toBeLessThan(SVG_LIMIT)
-    expect(shopSvg(['vitality', 'deep', 'caverns'], { ...NO_META, vitality: 4, whetstone: 3, shield: 3, potion_blue: 1, loot_bag: 1 }, 5).length).toBeLessThan(SVG_LIMIT)
+    expect(shopSvg(['vitality', 'deep', 'caverns'], { ...NO_META, vitality: 4, whetstone: 3, shield: 3, potion_blue: 1, loot_bag: 1 }, 5, 999).length).toBeLessThan(SVG_LIMIT)
   })
 })
 
@@ -874,6 +934,23 @@ async function landed(state: Record<string, unknown>, after?: Recap): Promise<Re
     await new Promise<void>(done => setTimeout(done, 5))
   }
   throw new Error('the recap never landed')
+}
+
+// Plays the model under the mod: each call is one response of the turn, its text and the
+// tools it calls (none: the reply itself), from the main loop or a subagent's.
+function steps($: Engine, on: On) {
+  let said = { answer: '', tools: [] as string[] }
+  on('turn.step', async function* (_$, e) {
+    if (said.answer) yield { kind: 'text' as const, index: 0, text: said.answer }
+    const toolUses = said.tools.map(name => ({ name, input: {} }))
+    return { turnId: e.turnId, index: e.index, answer: said.answer, toolUses, stopReason: toolUses.length ? ('tool_use' as const) : ('end_turn' as const), usage: null }
+  })
+  return async (turnId: string, answer: string, tools: string[], agentId?: string) => {
+    said = { answer, tools }
+    const stream = $.turn.step({ turnId, index: 0, model: 'opus', messageCount: 1, ...(agentId ? { agentId } : {}) })
+    for await (const _ of stream) void _
+    return stream.result
+  }
 }
 
 describe('reply recap', () => {
@@ -1087,8 +1164,9 @@ describe('reply recap', () => {
     await type('zz qq ww\n')
     expect((state.recap as Recap).at).toBe(7)
     expect(state.run).toEqual(before)
-    // Mid-turn, with only practice to type, the Attack button is back.
+    // Mid-turn, with only practice left, lore takes the typer, and the Attack button is back beside it.
     await $.turn.start({ text: 'next', turnId: 't2' })
+    expect(await ui.find({ type: 'Text', text: /^LORE$/ })).toBeDefined()
     expect(await ui.find({ type: 'Button', text: /Attack/ })).toBeDefined()
     await ui.unmount()
   })
@@ -1143,6 +1221,78 @@ describe('reply recap', () => {
     expect(next.lines[0]).toBe('Rewrote the setup guide for new users.')
     expect(next.at).toBe(0)
     expect((await ui.find({ type: 'Client', key: 'typer' }))?.props.props).toMatchObject({ line: 'Rewrote the setup guide for new users.', typed: '' })
+    await ui.unmount()
+  })
+
+  test("while Claude works its words between tool calls are the lines to type; lore fills the silence", async ($, on) => {
+    const { state } = world(on, { flavor: SEEN, haikuOn: false })
+    const step = steps($, on)
+    await $.turn.start({ text: 'fix login', turnId: 't1' })
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    const line = async () => ((await ui.find({ type: 'Client', key: 'typer' }))?.props.props as { line: string } | undefined)?.line
+
+    // Nothing said yet: a lore line, to type or not, with the Attack button beside it.
+    expect(await ui.find({ type: 'Text', text: /^LORE$/ })).toBeDefined()
+    expect(Object.values(TABLE).flat()).toContain(await line())
+    expect(await ui.find({ type: 'Button', text: /Attack/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /or click the lore and type to attack/ })).toBeDefined()
+
+    // Claude says what it will do and calls a tool: its words take the untouched lore's place.
+    const SAID = 'I will read the session store first and then check the token parser.'
+    await step('t1', SAID, ['Read'])
+    expect(await ui.find({ type: 'Text', text: /^LIVE$/ })).toBeDefined()
+    expect(await line()).toBe(SAID)
+    expect(await ui.find({ type: 'Button', text: /Attack/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /click the words and type to attack/ })).toBeDefined()
+
+    // A subagent's words and the reply itself (a step that calls no tool) are not narration.
+    await step('t1', 'A subagent says something long enough to be a line here.', ['Grep'], 'a1')
+    await step('t1', 'All done, the login works again and the tests pass now.', [])
+    expect((state.recap as Recap).lines).toEqual([SAID])
+
+    // Typed right, its words swing; the line done, lore fills in again.
+    const before = state.run
+    await keys(ui, SAID)
+    expect(state.run).not.toEqual(before)
+    expect((state.recap as Recap).accuracies).toEqual([1])
+    expect(await ui.find({ type: 'Text', text: /^LORE$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /✓ Line 1: 100%/ })).toBeDefined()
+
+    // More words while the lore is untouched: they take its place.
+    const MORE = 'The parser compares seconds with milliseconds, so I will fix that next.'
+    await step('t1', MORE, ['Edit'])
+    expect((state.recap as Recap).lines).toEqual([SAID, MORE])
+    expect(await line()).toBe(MORE)
+
+    // The turn ends: the live lines go with it, before any reply recap lands.
+    await $.turn.complete(end('t1', 'done'))
+    expect((state.recap as Recap | null)?.isLive).toBeFalsy()
+    expect(await ui.find({ type: 'Client', key: 'typer' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test("mid-turn the last reply's lines come first; once they are done, Claude's words this turn are next", async ($, on) => {
+    const { state } = world(on, { flavor: SEEN, haikuOn: false })
+    const step = steps($, on)
+    await $.turn.start({ text: 'fix login', turnId: 't1' })
+    await $.turn.complete(end('t1', LONG))
+    const last = await landed(state)
+    await $.turn.start({ text: 'now the docs', turnId: 't2' })
+    const SAID = 'I will look through the setup guide for the steps that changed.'
+    await step('t2', SAID, ['Read'])
+    // The reply's lines still pay, so they stay up; Claude's words wait their turn.
+    expect((state.recap as Recap).id).toBe(last.id)
+    expect(state.heard).toEqual([SAID])
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    for (const _ of last.lines) await ui.press({ key: 'skip' })
+    expect((state.recap as Recap)).toMatchObject({ isLive: true, lines: [SAID], at: 0 })
+    expect(await ui.find({ type: 'Text', text: /^LIVE$/ })).toBeDefined()
+    // A new turn starts this turn's words afresh.
+    await $.turn.complete(end('t2', 'done'))
+    await $.turn.start({ text: 'and the readme', turnId: 't3' })
+    expect(state.heard).toEqual([])
+    expect((state.recap as Recap).lore).toEqual([0])
     await ui.unmount()
   })
 
@@ -1288,6 +1438,20 @@ describe('reply recap', () => {
     await $.turn.complete(end('t1', `${LONG}\n\nTL;DR: Fixed the login bug and added a regression test.`))
     expect((await landed(state)).lines[0]).toBe('Fixed the login bug and added a regression test.')
     expect(asked).toBe(0)
+  })
+
+  test('the recap is written before the turn ends, so a hot reload as it ends cannot drop it', async ($, on) => {
+    const { atEnd } = world(on, { flavor: SEEN })
+    on('model.complete', () => ({ value: { isAnswered: false as const, reason: 'aborted' as const, usage: USAGE } }))
+    await $.turn.start({ text: 'fix it', turnId: 't1' })
+    await $.turn.complete(end('t1', `${LONG}\n\nTL;DR: Fixed the login bug and added a regression test.`))
+    expect((atEnd[0] as Recap | undefined)?.lines[0]).toBe('Fixed the login bug and added a regression test.')
+    // Haiku's line still comes in the background; the pending card is up before the turn ends.
+    await $.turn.start({ text: 'again', turnId: 't2' })
+    await $.turn.complete(end('t2', LONG))
+    expect((atEnd[1] as Recap | undefined)?.isPending).toBe(true)
+    const said = (await $.command.run({ ...RUN, command: 'delve', args: 'debug' })).text
+    expect(said).toMatch(/^delve build .* · mode idle · recap id \d+: 0 lines \(top 0\), at 0, pending · heard 0$/)
   })
 
   const COMPOSE = { model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: [], tools: [], outputStyle: null, traits: [] } as const

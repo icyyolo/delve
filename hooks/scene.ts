@@ -4,7 +4,7 @@
 import type { ItemId, Loot, LootKind, Meta, MonsterKind, Quest, Run, Spell, Weapon } from '../types'
 import { WEAPONS } from './claude'
 import { STATS } from './combat'
-import { ICON, WARES, priceOf } from './shop'
+import { GOODS, GOOD_IDS, ICON, WARES, priceOf } from './shop'
 import { PALETTE, SPRITES } from './sprites.gen'
 
 type Grid = readonly string[]
@@ -431,10 +431,19 @@ export function questsSvg(board: readonly Quest[]): string {
 }
 
 // The shop as a counter: the shopkeeper, each ware on the shelf with its level above and
-// its price below (red when the XP falls short), and what was bought for good underneath.
-export function shopSvg(stock: readonly ItemId[] | null, meta: Meta, xp: number): string {
+// its price below (red when the XP falls short), the run goods on a gold shelf below it,
+// and what was bought for good underneath.
+export function shopSvg(stock: readonly ItemId[] | null, meta: Meta, xp: number, gold: number): string {
   const owned = (Object.keys(WARES) as ItemId[]).filter(id => meta[id] > 0)
-  const h = 56 + (owned.length ? 24 : 0)
+  const h = 88 + (owned.length ? 24 : 0)
+  const goods = GOOD_IDS.map((id, i) => {
+    const x = 24 + i * 32
+    const { name, does, price, icon } = GOODS[id]
+    return tip(
+      `${name}: ${does}. ${price} gold, this run only`,
+      firstFrame(icon, x, 64) + say(String(i + 4), x - 3, 65, 'w') + sayMid(`${price}G`, x + 8, 80, gold >= price ? 'y' : 'r'),
+    )
+  })
   const wall = new Map<string, string>()
   for (let y = 0; y < 2; y++) for (let x = 0; x < ROOM_W; x++) addRuns(wall, SPRITES['crypt_wall']?.[0] ?? [], x * T, 10 + y * T)
   const shelf = (stock ?? []).map((id, i) => {
@@ -455,9 +464,11 @@ export function shopSvg(stock: readonly ItemId[] | null, meta: Meta, xp: number)
     tip('The shopkeeper', flip(animated('skeleton_idle', 0, 26), 0)),
     `<rect y="42" width="${SCENE_W}" height="4" fill="${hex('o')}"/><rect y="42" width="${SCENE_W}" height="1" fill="${hex('y')}"/><rect y="45" width="${SCENE_W}" height="1" fill="${hex('p')}"/>`,
     stock === null ? sayMid('STOCKING...', 64, 32, 'e') : stock.length === 0 ? sayMid('SOLD OUT', 64, 32, 'r') : shelf.join(''),
+    tip(`${gold} gold to spend this run`, say('GOLD', 3, 64, 'e') + say(String(gold), 3, 72, 'y')),
+    goods.join(''),
     owned.length
-      ? say('OWNED', 3, 58, 'e') +
-        owned.map((id, i) => tip(`${WARES[id].name} ${meta[id]}/${WARES[id].max}: ${WARES[id].does}`, firstFrame(ICON[id], i * 16, 64) + say(String(meta[id]), i * 16 + 12, 75, 'w'))).join('')
+      ? say('OWNED', 3, 90, 'e') +
+        owned.map((id, i) => tip(`${WARES[id].name} ${meta[id]}/${WARES[id].max}: ${WARES[id].does}`, firstFrame(ICON[id], i * 16, 96) + say(String(meta[id]), i * 16 + 12, 107, 'w'))).join('')
       : '',
   ]
   return svg(SCENE_W, h, body.join(''))

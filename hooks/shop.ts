@@ -1,6 +1,7 @@
 // Meta shop rules, pure: the wares, their prices, what Haiku is asked and how its pick is read.
 
-import type { ItemId, Meta, Shop } from '../types'
+import type { ItemId, Meta, Run, Shop } from '../types'
+import { biomeFor, spawn } from './combat'
 import type { Roll } from './combat'
 
 type Ware = { name: string; does: string; max: number; base: number }
@@ -25,6 +26,27 @@ export const ICON: Record<ItemId, string> = {
   loot_bag: 'loot_bag',
   caverns: 'caverns_wall_alt',
   deep: 'mimic_idle',
+}
+
+// Run goods: always on the lower shelf, paid in the run's gold, used at once, gone with the run.
+export type GoodId = 'potion' | 'scroll' | 'key'
+type Good = { name: string; does: string; price: number; icon: string }
+export const GOODS: Record<GoodId, Good> = {
+  potion: { name: 'Red potion', does: '+3 HP', price: 6, icon: 'potion_red' },
+  scroll: { name: 'Scroll', does: '3 free swings', price: 10, icon: 'scroll' },
+  key: { name: 'Key', does: 'skip this monster, down a floor', price: 12, icon: 'key' },
+}
+export const GOOD_IDS = Object.keys(GOODS) as GoodId[]
+export const isGood = (id: string): id is GoodId => (GOOD_IDS as string[]).includes(id)
+export const POTION_HP = 3
+// When a run ends, its leftover gold turns to XP at this rate.
+export const GOLD_PER_XP = 5
+
+// The key: past the monster to the next floor, with no kill, so no gold and no heal.
+export function unlock(r: Run, roll: Roll, meta: Meta): Run {
+  const floor = r.floor + 1
+  const note = `The key opened a way past the ${r.monster.kind}: down to floor ${floor}.`
+  return { ...r, floor, biome: biomeFor(floor, meta), monster: spawn(floor, roll, meta), last: { dealt: 0, took: 0, isEvent: true, note } }
 }
 
 export const STOCK_SIZE = 3
@@ -83,7 +105,7 @@ export function readPick(text: string, meta: Meta, roll: Roll): Shop {
 export const ownedOf = (meta: Meta) =>
   (Object.keys(WARES) as ItemId[]).filter(id => meta[id] > 0).map(id => `${WARES[id].name} ${meta[id]}/${WARES[id].max}`)
 
-export function shopText(shop: Shop, meta: Meta, xp: number): string {
+export function shopText(shop: Shop, meta: Meta, xp: number, gold: number): string {
   const owned = ownedOf(meta)
   return [
     `Shopkeeper: "${shop.pitch}"`,
@@ -91,6 +113,8 @@ export function shopText(shop: Shop, meta: Meta, xp: number): string {
     ...(shop.stock.length
       ? shop.stock.map(id => `- ${id}: ${WARES[id].name} (${WARES[id].does}), ${priceOf(id, meta)} XP`)
       : ['Sold out. New wares arrive with the next run.']),
+    `Run goods, for this run only. You hold ${gold} gold.`,
+    ...GOOD_IDS.map(id => `- ${id}: ${GOODS[id].name} (${GOODS[id].does}), ${GOODS[id].price} gold`),
     ...(owned.length ? [`Owned: ${owned.join(', ')}`] : []),
     'Buy with /delve buy <id>.',
   ].join('\n')

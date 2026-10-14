@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer, ToolCallInput, ToolCallResult } from 'claude-code'
 
-import type { Fighter, Flavor, ItemId, Loot, LootKind, Meta, Mode, Purse, Quest, Recap, Rest, Run, Shop, Spell, View, Weapon } from '../types'
+import type { Fighter, Flavor, Loot, LootKind, Meta, Mode, Purse, Quest, Recap, Rest, Run, Shop, Spell, View, Weapon } from '../types'
 import {
   FAMILIAR_DAMAGE,
   QUEST_GOLD,
@@ -20,12 +20,15 @@ import {
   weaponFor,
 } from './claude'
 import { NO_META, ambush, attack, counter, newRun, readMsFor, strike, swingDamage } from './combat'
-import { dayOf, flavorPrompt, readLine, roomOf, tableLine } from './flavor'
+import { TABLE, dayOf, flavorPrompt, readLine, roomOf, tableLine } from './flavor'
 import { TLDR_ASK, editedPath, fallbackKeys, fileList, finishedWords, hasRound, liveScore, readRecap, recapPrompt, restLines, score, tldrOf, topLines } from './recap'
 import { BIOME_NAME, LOOT_NAME, SCALE, SCENE_H, SCENE_W, questsSvg, sceneSvg, shopSvg } from './scene'
-import { WARES, diceShop, ownedOf, priceOf, readPick, shopPrompt, shopText } from './shop'
+import { GOLD_PER_XP, GOODS, GOOD_IDS, POTION_HP, WARES, diceShop, isGood, ownedOf, priceOf, readPick, shopPrompt, shopText, unlock } from './shop'
+import type { GoodId } from './shop'
 import type { TyperPost, TyperProps } from './typer'
 
+// Named in `/delve debug`, so a live check can tell which build the session runs.
+const BUILD = '2026-10-14 gold shelf + recap before turn end'
 const PANE = 'depths'
 const TITLE = "Claude's Depths"
 
@@ -83,6 +86,7 @@ const quests = atom({ plugin: 'delve', key: 'quests' } as const, [] as Quest[])
 const context = atom({ plugin: 'delve', key: 'context' } as const, null as number | null)
 const recap = atom({ plugin: 'delve', key: 'recap' } as const, null as Recap | null)
 const edited = atom({ plugin: 'delve', key: 'edited' } as const, [] as string[])
+const heard = atom({ plugin: 'delve', key: 'heard' } as const, [] as string[])
 
 // The running turn's farm timers and the pause's torch timers; a hot reload cancels
 // them with the module, and session.start arms the torch again from `rest`.
@@ -426,14 +430,49 @@ async function summarise($: EngineInterface, id: number, answer: string) {
     return
   }
   await update($, recap, () => ({ ...base, keys: [], isPending: true }))
-  const said = await askHaiku($, recapPrompt(answer), 220, RECAP_TIMEOUT_MS)
-  const got = said ? readRecap(said) : undefined
-  const done = { ...queue(got?.lines ?? []), keys: got?.keys ?? base.keys }
-  await update($, recap, r => (r?.id === id ? { ...r, ...done, isPending: false } : r))
+  // Only Haiku's answer is left to the background; the turn has ended by the time it lands.
+  void (async () => {
+    const said = await askHaiku($, recapPrompt(answer), 220, RECAP_TIMEOUT_MS)
+    const got = said ? readRecap(said) : undefined
+    const done = { ...queue(got?.lines ?? []), keys: got?.keys ?? base.keys }
+    await update($, recap, r => (r?.id === id ? { ...r, ...done, isPending: false } : r))
+  })().catch(() => undefined)
 }
 
 // Practice: the reply's lines done, they come round again unpaid, for speed alone.
 const isPractice = (r: Recap) => r.at >= r.lines.length
+
+// The lore that fills the live typer while Claude works on in silence: the rooms' own lines.
+const LORE = Object.values(TABLE).flat()
+const isLoreHere = (r: Recap) => !!r.isLive && !!r.lore?.includes(r.at)
+
+// A live recap that has run out of lines goes on with a lore line.
+function withLore(r: Recap): Recap {
+  if (r.at < r.lines.length) return r
+  return { ...r, lines: [...r.lines, LORE[(r.id + r.lines.length) % LORE.length]!], lore: [...(r.lore ?? []), r.lines.length] }
+}
+
+// Mid-turn, with no reply lines left that pay (none, or only practice), the typer turns to
+// what Claude has said this turn as it works, or lore while it has said nothing.
+async function goLive($: EngineInterface) {
+  if ((await read($, mode)) === 'idle') return
+  const said = await read($, heard)
+  const id = await $.clock.now()
+  const live: Recap = { id, isPending: false, isLive: true, lines: said, lore: [], top: 0, at: 0, accuracies: [], keys: [], files: [], typed: '', startedAt: null }
+  await update($, recap, r => (!r?.lines.length || isPractice(r) ? withLore(live) : r))
+}
+
+// Claude's words between tool calls: kept for the turn and onto the live typer at once, in
+// place of a lore line not yet started.
+async function hear($: EngineInterface, said: string[]) {
+  await update($, heard, h => [...h, ...said])
+  await update($, recap, r => {
+    if (!r?.isLive) return r
+    if (!isLoreHere(r) || r.typed || r.startedAt !== null) return { ...r, lines: [...r.lines, ...said] }
+    return { ...r, lines: [...r.lines.slice(0, r.at), ...said], lore: r.lore!.filter(i => i !== r.at) }
+  })
+  await goLive($)
+}
 
 // Typing is the fight: each recap word finished right swings, each one wrong gives the
 // monster its chance to hit back. Practice lines never fight, so retyping them farms nothing.
@@ -502,7 +541,7 @@ async function payLine($: EngineInterface, was: Recap, now: Recap, got: { accura
       void $.ui.toast(`${said} +${pays} energy${isFast ? `, +${RECAP_XP} XP` : ''}.`)
     }
   }
-  if (now.at !== now.lines.length || now.lines.length <= now.top) return
+  if (now.isLive || now.at !== now.lines.length || now.lines.length <= now.top) return
   const avg = restAverage(now)
   const said = `Reply typed through: ${Math.round(avg * 100)}% on average.`
   if (avg < RECAP_ACCURACY) {
@@ -516,6 +555,8 @@ async function payLine($: EngineInterface, was: Recap, now: Recap, got: { accura
 // The recap's phase as the pane tags it: where the line sits and what typing it pays.
 function phaseOf(r: Recap): { tag: string; color: string; note: string } {
   const pct = `${RECAP_ACCURACY * 100}%`
+  if (isLoreHere(r)) return { tag: 'LORE', color: 'subtle', note: 'while Claude works on in silence; typing it swings too' }
+  if (r.isLive) return { tag: 'LIVE', color: 'claude', note: "Claude's words as it works; each word typed right swings" }
   if (r.at < r.top) {
     const pays = r.at === 0 ? RECAP_ENERGY : RECAP_ENERGY_MORE
     return {
@@ -573,10 +614,11 @@ async function checkRecap($: EngineInterface, text: string | null, id?: string) 
       if (!isPractice(r)) words = finishedWords(line, r.typed, typed && !typed.endsWith(' ') ? `${typed} ` : typed)
       got = score(line, typed, now - (r.startedAt ?? now))
     }
-    return nextLine(r, got)
+    return r.isLive ? withLore(nextLine(r, got)) : nextLine(r, got)
   })
   if (was && moved) await payLine($, was, moved, got)
   await fight($, words)
+  if (moved && isPractice(moved)) await goLive($)
 }
 
 // The current room's flavor line, written once per room; a line for a room the hero
@@ -619,6 +661,7 @@ async function openShop($: EngineInterface) {
 }
 
 async function buy($: EngineInterface, id: string): Promise<string> {
+  if (isGood(id)) return buyGood($, id)
   const stocked = await currentShop($)
   const ware = stocked.stock.find(s => s === id)
   if (!ware) return `No "${id}" on the shelf. /delve shop lists the wares.`
@@ -637,15 +680,37 @@ async function buy($: EngineInterface, id: string): Promise<string> {
   return `Bought ${WARES[ware].name} ${m[ware]}/${WARES[ware].max}: ${WARES[ware].does}. ${held - price} XP left.`
 }
 
+// A run good: paid from the run's gold and used at once. A potion on full HP is not sold.
+async function buyGood($: EngineInterface, id: GoodId): Promise<string> {
+  const good = GOODS[id]
+  const r = await read($, run)
+  if (r.isDead) return 'The fallen buy nothing. New run turns their gold to XP.'
+  if (r.gold < good.price) return `${good.name} costs ${good.price} gold; you hold ${r.gold}.`
+  if (id === 'potion' && r.hp >= r.maxHp) return 'HP is full; keep the gold.'
+  const m = await read($, meta)
+  const now = await changeRun($, was => {
+    const paid = { ...was, gold: was.gold - good.price }
+    return id === 'potion' ? { ...paid, hp: Math.min(paid.maxHp, paid.hp + POTION_HP) } : id === 'key' ? unlock(paid, Math.random, m) : paid
+  })
+  if (id === 'scroll') await update($, spell, s => ({ skill: s?.skill ?? 'scroll', swings: (s?.swings ?? 0) + SPELL_SWINGS }))
+  if (id === 'key') await describeRoom($)
+  return `Bought ${good.name}: ${good.does}. ${now.gold} gold left.`
+}
+
 // The shop view's Buy: the same purchase as /delve buy, its message as a toast.
-async function buyFromPane($: EngineInterface, id: ItemId) {
+async function buyFromPane($: EngineInterface, id: string) {
   void $.ui.toast(await buy($, id))
 }
 
-// New run: the hero starts with what the shop sold, and the shop restocks.
+// New run: the fallen run's gold turns to XP, the hero starts with what the shop sold, and the shop restocks.
 async function startOver($: EngineInterface) {
   const fallen = await read($, run)
   const m = await read($, meta)
+  const cashed = Math.floor(fallen.gold / GOLD_PER_XP)
+  if (cashed > 0) {
+    await changePurse($, p => ({ ...p, xp: p.xp + cashed }))
+    void $.ui.toast(`Cashed out ${fallen.gold} gold: +${cashed} XP.`)
+  }
   await changeRun($, () => newRun(m))
   await describeRoom($)
   await restock($, fallen.floor)
@@ -670,7 +735,7 @@ function noteLine(r: Run): string | undefined {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'delve', description: "Claude's Depths: /delve opens the pane, /delve off turns it off, /delve shop spends XP, /delve haiku toggles Haiku lines, /delve tldr asks Claude for TL;DR lines" })
+    await $.command.register({ name: 'delve', description: "Claude's Depths: /delve opens the pane, /delve off turns it off, /delve shop spends XP and gold,/delve haiku toggles Haiku lines, /delve tldr asks Claude for TL;DR lines" })
     await loadSaved($)
     regenTimer?.cancel()
     regenTimer = $.clock.every(REGEN_MS, () => void regen($))
@@ -694,9 +759,17 @@ export const register: Register = on => {
         await update($, view, () => 'shop')
         void $.ui.open({ id: PANE, title: TITLE })
       }
-      return { text: shopText(await currentShop($), await read($, meta), (await read($, purse)).xp) }
+      return { text: shopText(await currentShop($), await read($, meta), (await read($, purse)).xp, (await read($, run)).gold) }
     }
     if (verb === 'buy' && item) return { text: await buy($, item) }
+    // Which build runs, and the recap as the session holds it: what a live check needs.
+    if (verb === 'debug') {
+      const rc = await read($, recap)
+      const said = rc
+        ? `recap id ${rc.id}: ${rc.lines.length} lines (top ${rc.top}), at ${rc.at}${rc.isPending ? ', pending' : ''}${rc.isLive ? ', live' : ''}${rc.lore?.length ? `, lore at ${rc.lore.join(',')}` : ''}`
+        : 'recap: none'
+      return { text: `delve build ${BUILD} · mode ${await read($, mode)} · ${said} · heard ${(await read($, heard)).length}` }
+    }
     if (verb === 'haiku' && (item === undefined || item === 'on' || item === 'off')) {
       const isOn = item === undefined ? !(await isHaikuOn($)) : item === 'on'
       await $.store.set('haikuOn', isOn)
@@ -721,7 +794,7 @@ export const register: Register = on => {
       void $.ui.status(undefined)
       return { text: "Claude's Depths is off. /delve turns it back on." }
     }
-    if (arg !== '' && arg !== 'on') return { text: 'Usage: /delve [on|off|shop|buy <id>|haiku [on|off]|tldr [on|off]]' }
+    if (arg !== '' && arg !== 'on') return { text: 'Usage: /delve [on|off|shop|buy <id>|haiku [on|off]|tldr [on|off]|debug]' }
     await $.store.set('enabled', true)
     const opened = await $.ui.open({ id: PANE, title: TITLE })
     await showStatus($)
@@ -736,7 +809,9 @@ export const register: Register = on => {
     await update($, purse, p => ({ ...p, gained: 0 }))
     // The last reply's recap stays up, typeable while Claude works, until this turn's lands.
     await update($, edited, () => [])
+    await update($, heard, () => [])
     await update($, mode, () => 'combat')
+    await goLive($)
     await showStatus($)
     farmTimers.push($.clock.after(FARM_AFTER_MS, () => void startFarm($)))
 
@@ -798,6 +873,21 @@ export const register: Register = on => {
     return said
   }).catch(($, e, next) => next(e))
 
+  // Claude's words between its tool calls become typing lines as each step lands; a step
+  // that calls no tool is the reply, which gets its own recap as the turn ends.
+  on('turn.step', async function* ($, e, next) {
+    const step = yield* next(e)
+    const said = !e.agentId && step.toolUses.length > 0 ? restLines(step.answer, []) : []
+    if (said.length) {
+      try {
+        await hear($, said)
+      } catch {
+        // never fail Claude's step on game bookkeeping
+      }
+    }
+    return step
+  })
+
   on('turn.complete', async ($, e, next) => {
     if (e.agentId) {
       await settle($, e.agentId)
@@ -806,6 +896,7 @@ export const register: Register = on => {
     // Freeze: the game waits while the person reads the reply.
     stopFarm()
     await update($, mode, () => 'idle')
+    await update($, recap, r => (r?.isLive ? null : r))
     await update($, loot, () => [])
     const pause: Rest = { endedAt: await $.clock.now(), readMs: readMsFor(e.answer), isOut: false }
     await update($, rest, () => pause)
@@ -813,8 +904,9 @@ export const register: Register = on => {
     if (e.reason !== 'answer') await changeRun($, r => turnEnd(r, e.reason))
     await measureTorch($)
     await showStatus($)
-    // In the background: the turn ends now, the recap lands when Haiku answers; a failure shows none.
-    void summarise($, pause.endedAt, e.answer).catch(() => undefined)
+    // The recap is written before the turn ends: a hot reload as it ends drops work still
+    // running. Haiku's line, when one is asked for, lands later; a failure shows none.
+    await summarise($, pause.endedAt, e.answer).catch(() => undefined)
 
     return next(e)
   })
@@ -836,17 +928,19 @@ export const register: Register = on => {
     if ((await read($, view)) === 'shop') {
       // Only the shop view reads the purse, so tool calls redraw the scene no more than before.
       const { xp } = await read($, purse)
+      const { gold } = await read($, run)
       const stocked = await read($, shop)
       const m = await read($, meta)
       const owned = ownedOf(m)
       const wares = stocked
         ? stocked.stock.map(id => `${WARES[id].name} ${m[id] + 1}/${WARES[id].max}: ${WARES[id].does}, ${priceOf(id, m)} XP`).join('; ') || 'Sold out'
         : 'Stocking the shelves'
+      const goods = GOOD_IDS.map(id => `${GOODS[id].name}: ${GOODS[id].does}, ${GOODS[id].price} gold`).join('; ')
       return (
         <Box flexDirection="column" gap={1}>
           <Svg
-            source={shopSvg(stocked?.stock ?? null, m, xp)}
-            alt={`Shop · ${xp} XP. ${wares}.${owned.length ? ` Owned: ${owned.join(', ')}.` : ''}`}
+            source={shopSvg(stocked?.stock ?? null, m, xp, gold)}
+            alt={`Shop · ${xp} XP. ${wares}. Run goods · ${gold} gold. ${goods}.${owned.length ? ` Owned: ${owned.join(', ')}.` : ''}`}
             width={SCENE_W * SCALE}
             isInteractive
           />
@@ -869,6 +963,16 @@ export const register: Register = on => {
                 />
               )
             })}
+            {GOOD_IDS.map((id, i) => (
+              <Button
+                key={`good-${id}`}
+                hotkey={String(i + 4)}
+                label={`Buy ${GOODS[id].name} · ${GOODS[id].price} gold [${i + 4}]`}
+                variant={gold >= GOODS[id].price ? 'primary' : undefined}
+                dimColor={gold < GOODS[id].price}
+                onPress={() => void buyFromPane($, id)}
+              />
+            ))}
             <Button key="back" hotkey="b" label="Back [B]" onPress={() => void update($, view, () => 'scene')} />
           </Box>
         </Box>
@@ -888,8 +992,10 @@ export const register: Register = on => {
     const dark = darkness(pct)
     const pause = await read($, rest)
     const rc = await read($, recap)
-    // Typing is the attack until the practice lines; then the Attack button is back.
-    const isTyping = !!rc?.lines.length && !isPractice(rc)
+    // Typing is the attack until the practice lines; then the Attack button is back. A lore
+    // line is there to type or not, so Attack stays beside it.
+    const isLore = !!rc && isLoreHere(rc)
+    const isTyping = !!rc?.lines.length && !isPractice(rc) && !isLore
     const line = rc?.lines[rc.at % rc.lines.length]
     // Read as a keystroke redraws the pane: no clock of its own.
     const live = line && rc?.startedAt != null && rc.typed ? liveScore(line, rc.typed, (await $.clock.now()) - rc.startedAt) : undefined
@@ -1053,7 +1159,7 @@ export const register: Register = on => {
           {e.props.isFocused
             ? `Keys on: ${isTyping ? '' : 'A attack · '}S shop · 1-9 grab · Esc back to the prompt`
             : `For keys, click the pane or press ctrl+x tab: ${isTyping ? '' : 'A attack · '}S shop · 1-9 grab`}
-          {isTyping ? ' · click the words and type to attack' : ''}
+          {isTyping ? ' · click the words and type to attack' : isLore ? ' · or click the lore and type to attack' : ''}
         </Text>
         {board.some(q => !q.isDone) && (
           <Svg
