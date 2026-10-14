@@ -164,19 +164,27 @@ describe('AFK farm', () => {
     // The next drop is not grabbed and fades on its own.
     await clock.advance(DROP_EVERY_MS)
     expect(loot(state)).toHaveLength(1)
+    const missed = loot(state)[0]!.id
     await clock.advance(LOOT_MS)
-    expect(loot(state)).toEqual([])
+    expect(loot(state).some(l => l.id === missed)).toBe(false)
     await ui.unmount()
   })
 
-  test('a tool call before the farm delay means combat, no loot', async ($, on) => {
+  test('each tool call restarts the farm delay; a quiet gap after one farms', async ($, on) => {
     const { clock, state } = world(on)
 
     await $.turn.start({ text: 'run the tests', turnId: 't1' })
+    await clock.advance(FARM_AFTER_MS - 1)
     await runTool($, 'u1')
-    await clock.advance(FARM_AFTER_MS + DROP_EVERY_MS)
+    await clock.advance(FARM_AFTER_MS - 1)
     expect(state.mode).toBe('combat')
     expect(loot(state)).toEqual([])
+
+    await clock.advance(1)
+    expect(state.mode).toBe('farm')
+    expect(loot(state)).toHaveLength(1)
+    await runTool($, 'u2')
+    expect(state.mode).toBe('combat')
 
     await $.turn.complete({ answer: 'done', durationMs: 1, reason: 'answer', isAborted: false, turnId: 't1' })
     expect(state.mode).toBe('idle')
@@ -479,6 +487,16 @@ describe('flavor lines', () => {
     const r = state.run as Run
     expect(TABLE[r.monster.kind]).toContain(flavorOf(state)?.text)
     expect(await ui.find({ type: 'Text', text: flavorOf(state)!.text })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a kill drops one piece of loot at once', async ($, on) => {
+    const { state } = world(on, { ...nearKill, haikuOn: false })
+    const ui = await kill($)
+
+    expect((state.run as Run).floor).toBe(2)
+    expect(loot(state)).toHaveLength(1)
+    expect(await ui.find({ type: 'Button', text: /Grab/ })).toBeDefined()
     await ui.unmount()
   })
 

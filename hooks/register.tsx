@@ -31,8 +31,8 @@ const TITLE = "Claude's Depths"
 export const ENERGY_CAP = 20
 // A turn with no tool call by then is a Q&A turn: the hero farms.
 export const FARM_AFTER_MS = 3000
-export const DROP_EVERY_MS = 5000
-export const LOOT_MS = 3000
+export const DROP_EVERY_MS = 4000
+export const LOOT_MS = 7000
 // After a turn ends: drift this long and the torch burns out, the monster ambushes once.
 export const TORCH_MS = 5 * 60_000
 // Energy for coming back after reading the reply, before the torch burns out.
@@ -178,7 +178,7 @@ async function dropLoot($: EngineInterface) {
 }
 
 async function startFarm($: EngineInterface) {
-  // Only a turn reaches here (a tool call cancels this timer), so idle means it ended.
+  // Armed by turn start and after each tool call (the next call cancels it), so idle means the turn ended.
   const now = await update($, mode, m => (m === 'idle' ? m : 'farm'))
   if (now !== 'farm') return
   await dropLoot($)
@@ -234,7 +234,7 @@ async function swing($: EngineInterface) {
   const was = await read($, run)
   const now = await changeRun($, r => attack(r, Math.random, m, WEAPONS[w].edge))
   if (w === 'portal') await dropLoot($)
-  if (now.floor !== was.floor) await describeRoom($)
+  if (now.floor !== was.floor) await slain($)
 }
 
 async function hitRival($: EngineInterface, foe: Fighter, dealt: number) {
@@ -261,7 +261,13 @@ async function landBlow($: EngineInterface, dealt: number, who: string) {
     const note = s.last?.slain ? `${who} slew the ${s.last.slain}! Down to floor ${s.floor}.` : `${who} hit the ${r.monster.kind} for ${dealt}.`
     return { ...s, last: { dealt, took: 0, ...s.last, note } }
   })
-  if (now.floor !== was.floor) await describeRoom($)
+  if (now.floor !== was.floor) await slain($)
+}
+
+// A kill drops one piece of loot, then the new room gets its line.
+async function slain($: EngineInterface) {
+  await dropLoot($)
+  await describeRoom($)
 }
 
 // Claude's own tool call arms the hero: a weapon for the swings, or a familiar's strike.
@@ -524,6 +530,8 @@ export const register: Register = on => {
     await gainEnergy($)
     await forge($, e.tool, result)
     await track($, e, result)
+    // A quiet gap before the next call (Claude thinking or writing) farms too.
+    farmTimers.push($.clock.after(FARM_AFTER_MS, () => void startFarm($)))
 
     return result
   }).catch(($, e, next) => next(e)) // never gate a tool on game bookkeeping

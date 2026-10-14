@@ -102,7 +102,8 @@ The pane shows one room: the warrior on the left, a monster on the right, a HUD 
 | Claude does | In the depths |
 |---|---|
 | Any tool call | +1 energy (soft cap 20 per turn; past it, energy becomes XP) |
-| A turn with no tool call for 3 s (plain Q&A) | The hero farms: a loot drop every 5 s, each grabbable for 3 s |
+| 3 s with no tool call (a plain Q&A turn, or Claude thinking between calls) | The hero farms: a loot drop every 4 s, each grabbable for 7 s |
+| A monster dies | One loot drop on the spot |
 | Edit / Write / NotebookEdit | **Sword**: +1 damage |
 | Bash / PowerShell | **Hammer**: every swing crits. A failed command drops it (back to fists) |
 | Read / Grep / Glob | **Bow**: the monster cannot hit back |
@@ -171,7 +172,7 @@ The plugin is one hooks module (`hooks/register.tsx`) registered through `hooks/
 | Event | Used for |
 |---|---|
 | `session.start` | Register `/delve`, load the saved run, re-arm the torch, open the pane |
-| `turn.start` | Unfreeze, check the read gate (momentum), start the 3 s farm timer |
+| `turn.start` | Unfreeze, check the read gate (momentum), start the 3 s farm timer (re-armed after every tool call) |
 | `tool.call` | +1 energy, forge the weapon, summon a familiar, track the quest board; a subagent's calls count toward its own fight. Fails open: a game error never blocks a tool |
 | `agent.spawn` | Add an ally or a doppelganger |
 | `session.compact` | Quake |
@@ -252,7 +253,7 @@ sprite check passes, the largest scene is about 91k of the 131k-character `Svg` 
   drawing code in a browser (the gallery above). **Not yet verified in the live desktop pane:** tooltips,
   hotkeys and layout width.
 - **Effects may replay on redraw.** A redraw sends a new SVG, which likely restarts the last hit's one-shot
-  animations (for example, every 5 s loot drop while farming).
+  animations (for example, every 4 s loot drop while farming).
 - **`/delve buy` does not check the max level.** Two quick presses on the same ware can buy past its max.
 - **Saves can go out of order.** Two game events at once can write the store in the wrong order; the older
   value can win after a restart.

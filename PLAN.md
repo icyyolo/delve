@@ -25,8 +25,9 @@ Claude Code (fun first, focus later). Plugin name: `delve` (plugin names may not
 **Game loop**
 - Tool turns = combat. Energy from tool calls; soft cap 20/turn, overflow → XP. Energy + XP show in
   the status line (`$.ui.status`), not the pane, so tool calls never redraw the pane.
-- Q&A turns (no tools) = AFK farm: no tool call 3 s into a turn → hero farms; a loot drop every 5 s
-  (coin = gold, XP gem = +3 XP, potion = +2 HP), each a Grab button for 3 s.
+- AFK farm: 3 s with no tool call (Q&A turn, or a gap between calls; re-armed after every call) → hero
+  farms; a loot drop every 4 s (coin = gold, XP gem = +3 XP, potion = +2 HP), each a Grab button for 7 s.
+  Every kill also drops one.
 - Turn end: current action resolves, then freeze. Momentum bonus only if read gate passes
   (time on reply, scaled by its length).
 - Torch timer after turn end: drift > 5 min → one ambush (free monster hit), torch then "out".
@@ -137,3 +138,4 @@ Claude Code (fun first, focus later). Plugin name: `delve` (plugin names may not
 - 2026-10-14: Haiku daily cap lowered 10,000 -> 200 (user ask; normal play makes dozens of calls a day, past the cap the tables answer).
 - 2026-10-14: Marketplace: `.claude-plugin/marketplace.json` in the GitHub repo (owner icyyolo, source "./"); README install is `/plugin install delve --marketplace icyyolo/delve`, source checkout kept as the dev path.
 - 2026-10-14: `/delve haiku [on|off]` (user ask: toggle so the game spends no tokens). Bare `/delve haiku` flips; stored as `haikuOn` (default on) like `enabled`; askHaiku returns undefined first when off, so flavor uses the table and the shop rolls dice. Tests: toggle flips/stores, off = no model call on kill or shop (42 pass).
+- 2026-10-14: Loot more often (user ask: drops were rare). Farm timer re-armed after every tool call, so any 3 s gap farms (was: only before the first call); drop every 4 s (was 5); drops last 7 s (was 3); every kill (hero or ally blow) drops one. Tests: farm-gap test replaces "tool call means no loot", kill-drop test, fade test checks the missed drop by id (43 pass).
