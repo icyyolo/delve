@@ -1,0 +1,12 @@
+{
+  "name": "delve",
+  "description": "Claude's Depths: a pixel-art roguelite that Claude Code's own work drives",
+  "owner": { "name": "icyyolo" },
+  "plugins": [
+    {
+      "name": "delve",
+      "source": "./",
+      "description": "Pixel-art roguelite dungeon crawl that runs beside Claude Code"
+    }
+  ]
+}

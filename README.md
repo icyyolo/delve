@@ -38,6 +38,20 @@ farming, frozen, torch out, ally + doppelganger, death, capped hearts, quest scr
 
 ## Install and run
 
+At the prompt of a terminal `claude` session:
+
+```
+/plugin install delve --marketplace icyyolo/delve
+```
+
+Answer `y` to add the marketplace, then pick a scope (user scope loads it in every session, the
+desktop app's Code tab included). The command is not available inside the desktop app itself, so run it
+from a terminal once.
+
+The **Claude's Depths** pane opens by itself when the session starts.
+
+**From source** (for development):
+
 ```bash
 git clone https://github.com/icyyolo/delve.git
 ```
@@ -46,8 +60,7 @@ git clone https://github.com/icyyolo/delve.git
 claude --plugin-dir ./delve
 ```
 
-The **Claude's Depths** pane opens by itself when the session starts. To load it in every session, add
-the folder to `CLAUDE_CODE_PLUGIN_DIRS`.
+To load a source checkout in every session, add the folder to `CLAUDE_CODE_PLUGIN_DIRS`.
 
 | Command | Does |
 |---|---|
