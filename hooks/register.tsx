@@ -42,7 +42,7 @@ export const SHOP_TIMEOUT_MS = 8000
 // A room's line waits this long for Haiku before the table answers.
 export const FLAVOR_TIMEOUT_MS = 4000
 // Haiku calls a day (UTC), shop and flavor together; past it the table answers.
-export const HAIKU_DAILY_CAP = 10_000
+export const HAIKU_DAILY_CAP = 200
 
 // The base drops, plus the ones the shop unlocked.
 function lootKinds(m: Meta): LootKind[] {

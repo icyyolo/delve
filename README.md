@@ -145,7 +145,7 @@ run, Claude Haiku picks 3 wares and a one-line pitch (8 s timeout; dice pick if 
 | Deep dwellers | mimics and golems appear | 1 | 50 XP |
 
 **Flavor.** One Haiku line per room (4 s timeout, at most 120 characters), with 3 hand-written lines per
-monster as the fallback. Haiku calls (flavor + shop) are capped per UTC day.
+monster as the fallback. Haiku calls (flavor + shop) are capped at 200 per UTC day.
 
 ## How it works
 
@@ -246,7 +246,6 @@ sprite check passes, the largest scene is about 91k of the 131k-character `Svg` 
 - **Saved data is merged, not validated** on load.
 - **A subagent that never reports its end** leaves its ally or doppelganger in the room.
 - **Several sessions** share one store: last write wins.
-- The daily Haiku cap is high (10,000 calls).
 
 ## Roadmap
 
