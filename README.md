@@ -157,7 +157,7 @@ there, since loot cannot be grabbed until Claude works again). The lines, in ord
   at a clause break; a sentence that loses a third of itself to code or paths, or ends up under 4 words, is
   skipped. These lines pay nothing one by one: finishing the last one with a 90% average (a skip counts 0)
   pays **+1 XP** once, however long the reply.
-- **Then the lines come round again** for speed, unpaid, with your best WPM shown.
+- **Then the lines come round again** for speed, unpaid, with your best WPM shown. Practice lines don't attack, so the Attack button comes back mid-turn.
 
 Each line pays once, on top of momentum; skipping costs nothing. The recap stays up after you send your next
 prompt, so you can keep typing while Claude works (the pane's keys stay on the shop and loot until you click
@@ -299,7 +299,7 @@ plugin (it is git-ignored):
 npx -y -p typescript@5.6.3 tsc -p .
 ```
 
-**Current results:** validate passes (one warning: no author field, left out on purpose), 40/40 tests pass,
+**Current results:** validate passes (one warning: no author field, left out on purpose), 64/64 tests pass,
 sprite check passes, the largest scene is about 91k of the 131k-character `Svg` limit.
 
 ## Status and known issues

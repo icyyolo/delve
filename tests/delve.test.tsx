@@ -1078,9 +1078,18 @@ describe('reply recap', () => {
     expect(await ui.find({ type: 'Text', text: /✓ Line 5: 100% · 0 WPM · reply 100% on average · \+1 XP/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /PRACTICE 1\/5/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /unpaid, for speed · reply 100% on average/ })).toBeDefined()
+    // Practice never fights: a right word swings nothing, a wrong one draws no hit back.
+    expect(await ui.find({ type: 'Text', text: /type to attack/ })).toBeUndefined()
+    const before = state.run as Run
     await type(r.lines[0]!)
     expect(purse()).toMatchObject({ energy: 0, xp: RECAP_DONE_XP })
     expect((state.recap as Recap).at).toBe(6)
+    await type('zz qq ww\n')
+    expect((state.recap as Recap).at).toBe(7)
+    expect(state.run).toEqual(before)
+    // Mid-turn, with only practice to type, the Attack button is back.
+    await $.turn.start({ text: 'next', turnId: 't2' })
+    expect(await ui.find({ type: 'Button', text: /Attack/ })).toBeDefined()
     await ui.unmount()
   })
 

@@ -432,8 +432,11 @@ async function summarise($: EngineInterface, id: number, answer: string) {
   await update($, recap, r => (r?.id === id ? { ...r, ...done, isPending: false } : r))
 }
 
+// Practice: the reply's lines done, they come round again unpaid, for speed alone.
+const isPractice = (r: Recap) => r.at >= r.lines.length
+
 // Typing is the fight: each recap word finished right swings, each one wrong gives the
-// monster its chance to hit back.
+// monster its chance to hit back. Practice lines never fight, so retyping them farms nothing.
 async function fight($: EngineInterface, words: boolean[]) {
   for (const isRight of words) {
     if (isRight) await swing($, true)
@@ -458,7 +461,7 @@ async function typeRecap($: EngineInterface, text: string, id?: string) {
   await update($, recap, r => {
     if (!r?.lines.length || (id && typerId(r) !== id)) return r
     const typed = tidy(text)
-    words = finishedWords(r.lines[r.at % r.lines.length]!, r.typed, typed)
+    if (!isPractice(r)) words = finishedWords(r.lines[r.at % r.lines.length]!, r.typed, typed)
     return { ...r, typed, startedAt: r.startedAt ?? now }
   })
   await fight($, words)
@@ -567,7 +570,7 @@ async function checkRecap($: EngineInterface, text: string | null, id?: string) 
     if (text !== null) {
       const line = r.lines[r.at % r.lines.length]!
       const typed = tidy(text)
-      words = finishedWords(line, r.typed, typed && !typed.endsWith(' ') ? `${typed} ` : typed)
+      if (!isPractice(r)) words = finishedWords(line, r.typed, typed && !typed.endsWith(' ') ? `${typed} ` : typed)
       got = score(line, typed, now - (r.startedAt ?? now))
     }
     return nextLine(r, got)
@@ -885,7 +888,8 @@ export const register: Register = on => {
     const dark = darkness(pct)
     const pause = await read($, rest)
     const rc = await read($, recap)
-    const isTyping = !!rc?.lines.length
+    // Typing is the attack until the practice lines; then the Attack button is back.
+    const isTyping = !!rc?.lines.length && !isPractice(rc)
     const line = rc?.lines[rc.at % rc.lines.length]
     // Read as a keystroke redraws the pane: no clock of its own.
     const live = line && rc?.startedAt != null && rc.typed ? liveScore(line, rc.typed, (await $.clock.now()) - rc.startedAt) : undefined
