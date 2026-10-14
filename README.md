@@ -84,7 +84,7 @@ The pane shows one room: the warrior on the left, a monster on the right, a HUD 
 
 | Key (pane focused) | Action |
 |---|---|
-| `A` | Attack: costs 1 energy, or free while a spell lasts |
+| `A` | Attack: 1 energy (free while a spell lasts) for a full swing; at 0 energy a weak swing: 1 damage, no crit, no weapon |
 | `1` `2` `3` | Grab that loot drop (numbers are drawn above the drops) / buy that ware in the shop |
 | `S` | Open the shop |
 | `B` | Back from the shop |
@@ -102,6 +102,7 @@ The pane shows one room: the warrior on the left, a monster on the right, a HUD 
 | Claude does | In the depths |
 |---|---|
 | Any tool call | +1 energy (soft cap 20 per turn; past it, energy becomes XP) |
+| Every 15 s mid-turn with under 3 energy | +1 energy (regen, up to 3) |
 | 3 s with no tool call (a plain Q&A turn, or Claude thinking between calls) | The hero farms: a loot drop every 4 s, each grabbable for 7 s |
 | A monster dies | One loot drop on the spot |
 | Edit / Write / NotebookEdit | **Sword**: +1 damage |

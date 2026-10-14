@@ -37,6 +37,9 @@ export const LOOT_MS = 7000
 export const TORCH_MS = 5 * 60_000
 // Energy for coming back after reading the reply, before the torch burns out.
 export const MOMENTUM_ENERGY = 3
+// Mid-turn with energy below the cap, one comes back this often.
+export const REGEN_MS = 15_000
+export const REGEN_CAP = 3
 // Haiku gets this long to stock the shop before dice do it.
 export const SHOP_TIMEOUT_MS = 8000
 // A room's line waits this long for Haiku before the table answers.
@@ -69,6 +72,8 @@ const context = atom({ plugin: 'delve', key: 'context' } as const, null as numbe
 // them with the module, and session.start arms the torch again from `rest`.
 let farmTimers: Timer[] = []
 let torchTimers: Timer[] = []
+// The regen tick, armed at session.start.
+let regenTimer: Timer | undefined
 
 function stopFarm() {
   farmTimers.forEach(t => t.cancel())
@@ -206,34 +211,42 @@ async function grab($: EngineInterface, one: Loot) {
   )
 }
 
-// A spell's free swing first, else one energy; false when neither is left.
-async function pay($: EngineInterface): Promise<boolean> {
+// Mid-turn only (between turns the hero cannot swing), and never past REGEN_CAP or into `gained`.
+async function regen($: EngineInterface) {
+  if ((await read($, mode)) === 'idle' || (await read($, purse)).energy >= REGEN_CAP) return
+  await changePurse($, p => (p.energy < REGEN_CAP ? { ...p, energy: p.energy + 1 } : p))
+}
+
+// A spell's free swing first, else one energy: a power swing. With neither, a weak one, free.
+async function pay($: EngineInterface): Promise<'power' | 'weak'> {
   if (await read($, spell)) {
     await update($, spell, s => (s && s.swings > 1 ? { ...s, swings: s.swings - 1 } : null))
-    return true
+    return 'power'
   }
   let isPaid = false
   await changePurse($, p => {
     isPaid = p.energy > 0
     return isPaid ? { ...p, energy: p.energy - 1 } : p
   })
-  return isPaid
+  return isPaid ? 'power' : 'weak'
 }
 
-// One swing with the weapon in hand; a doppelganger in the way takes it first.
+// One swing with the weapon in hand (a weak one gets no weapon); a doppelganger in the way takes it first.
 async function swing($: EngineInterface) {
   if ((await read($, run)).isDead || (await read($, mode)) === 'idle') return
-  if (!(await pay($))) {
-    void $.ui.toast("No energy. Claude's tool calls charge it.")
-    return
-  }
+  const isWeak = (await pay($)) === 'weak'
   const m = await read($, meta)
   const w = await read($, weapon)
+  const edge = isWeak ? { isWeak } : WEAPONS[w].edge
   const foe = (await read($, fighters)).find(f => f.side === 'rival')
-  if (foe) return hitRival($, foe, swingDamage(Math.random, m, WEAPONS[w].edge))
+  if (foe) return hitRival($, foe, swingDamage(Math.random, m, edge))
   const was = await read($, run)
-  const now = await changeRun($, r => attack(r, Math.random, m, WEAPONS[w].edge))
-  if (w === 'portal') await dropLoot($)
+  const now = await changeRun($, r => {
+    const s = attack(r, Math.random, m, edge)
+    // Plain hits show only as pictures; a weak one says why it was weak.
+    return isWeak && s.last && !s.last.slain && !s.isDead ? { ...s, last: { ...s.last, note: `Weak swing, no energy: ${blowLine(s)}` } } : s
+  })
+  if (w === 'portal' && !isWeak) await dropLoot($)
   if (now.floor !== was.floor) await slain($)
 }
 
@@ -459,6 +472,8 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'delve', description: "Claude's Depths: /delve opens the pane, /delve off turns it off, /delve shop spends XP, /delve haiku toggles Haiku lines" })
     await loadSaved($)
+    regenTimer?.cancel()
+    regenTimer = $.clock.every(REGEN_MS, () => void regen($))
     const pause = await read($, rest)
     if (pause) await armTorch($, pause)
     if (await isEnabled($)) {
@@ -704,7 +719,7 @@ export const register: Register = on => {
                 key="attack"
                 variant="primary"
                 hotkey="a"
-                label={`⚔ Attack${rival ? ' doppelganger' : ''} (${sp ? 'free' : '1 energy'}) [A]`}
+                label={`⚔ Attack${rival ? ' doppelganger' : ''}${sp ? ' (free)' : ''} [A]`}
                 onPress={() => void swing($)}
               />
             )

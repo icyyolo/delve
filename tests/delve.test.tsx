@@ -4,7 +4,7 @@ import type { Engine } from 'claude-code/testing'
 
 import type { Biome, Meta, MonsterKind, Run } from '../types'
 import { NO_META, STATS, attack, biomeFor, newRun, spawn } from '../hooks/combat'
-import { DROP_EVERY_MS, ENERGY_CAP, FARM_AFTER_MS, HAIKU_DAILY_CAP, LOOT_MS, MOMENTUM_ENERGY, TORCH_MS } from '../hooks/register'
+import { DROP_EVERY_MS, ENERGY_CAP, FARM_AFTER_MS, HAIKU_DAILY_CAP, LOOT_MS, MOMENTUM_ENERGY, REGEN_CAP, REGEN_MS, TORCH_MS } from '../hooks/register'
 import { TABLE, dayOf, readLine, tableLine } from '../hooks/flavor'
 import { QUEST_GOLD, QUEST_XP, WEAPONS, allyDamage, darkness, weaponFor } from '../hooks/claude'
 import { iconSvg, questsSvg, sceneSvg, shopSvg } from '../hooks/scene'
@@ -145,6 +145,20 @@ describe('energy', () => {
     await runTool($, 'u99')
     expect(state.purse).toEqual({ energy: ENERGY_CAP + 1, xp: 2, gained: 1 })
   })
+
+  test('mid-turn, regen adds one energy per tick up to its cap; idle adds none', async ($, on) => {
+    const { clock, state } = world(on)
+    const energy = () => (state.purse as { energy: number } | undefined)?.energy ?? 0
+    await $.session.start({ cwd: '.', surface: 'desktop', isInteractive: true })
+    await clock.advance(REGEN_MS)
+    expect(energy()).toBe(0)
+
+    await $.turn.start({ text: 'think hard', turnId: 't1' })
+    await clock.advance(REGEN_MS)
+    expect(state.purse).toEqual({ energy: 1, xp: 0, gained: 0 })
+    await clock.advance(REGEN_MS * (REGEN_CAP + 2))
+    expect(state.purse).toEqual({ energy: REGEN_CAP, xp: 0, gained: 0 })
+  })
 })
 
 describe('AFK farm', () => {
@@ -220,19 +234,21 @@ describe('combat rules', () => {
 })
 
 describe('Attack button', () => {
-  test('with no energy it only toasts; with energy it spends one and hits', async ($, on) => {
+  test('with no energy it swings weak for 1; with energy it spends one and swings full', async ($, on) => {
     const { state, toasts } = world(on)
     const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
 
     await $.turn.start({ text: 'fix it', turnId: 't1' })
     await ui.press({ key: 'attack' })
-    expect(toasts.at(-1)).toMatch(/No energy/)
-    expect(state.run).toBeUndefined()
+    expect(toasts).toEqual([])
+    expect((state.run as Run).monster.hp).toBe(3)
+    expect(state.purse).toEqual({ energy: 0, xp: 0, gained: 0 })
+    expect(await ui.find({ type: 'Text', text: /Weak swing, no energy: Hit the slime for 1/ })).toBeDefined()
 
     await runTool($, 'u1')
     await ui.press({ key: 'attack' })
     expect((state.purse as { energy: number }).energy).toBe(0)
-    expect((state.run as Run).monster.hp).toBeLessThan(4)
+    expect((state.run as Run).monster.hp).toBeLessThan(3)
     expect(await pictured(ui, /Hit the slime/)).toBe(true)
     expect(await ui.find({ type: 'Text', text: /Hit the slime/ })).toBeUndefined()
     expect((await ui.find({ type: 'Button', text: /Attack/ }))?.props.hotkey).toBe('a')
@@ -628,6 +644,21 @@ describe("Claude's own work", () => {
     await callTool($, { tool: 'mcp__notes__ping', tool_use_id: 'u5' })
     expect((state.run as Run).monster.hp).toBe(hp - 1)
     expect(await ui.find({ type: 'Text', text: /Your familiar hit the slime for 1/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a weak swing gets no weapon: the portal pulls loot only on a power swing', async ($, on) => {
+    const { state } = world(on, { flavor: SEEN, run: { ...newRun(), monster: { kind: 'slime', hp: 8, maxHp: 8 } } }, tools)
+    await $.turn.start({ text: 'look it up', turnId: 't1' })
+    await callTool($, { tool: 'WebSearch', query: 'x', tool_use_id: 'u1' })
+    expect(state.weapon).toBe('portal')
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+
+    await ui.press({ key: 'attack' })
+    expect(loot(state)).toHaveLength(1)
+    await ui.press({ key: 'attack' })
+    expect(loot(state)).toHaveLength(1)
+    expect(await ui.find({ type: 'Text', text: /Weak swing, no energy/ })).toBeDefined()
     await ui.unmount()
   })
 

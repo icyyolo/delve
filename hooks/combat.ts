@@ -48,10 +48,12 @@ export function newRun(meta: Meta = NO_META): Run {
 }
 
 // What the weapon adds to a swing: extra damage, a sure crit, or range (no hit back).
-export type Edge = { bonus?: number; isSure?: boolean; isRanged?: boolean }
+// A weak swing (no energy) gets none of it and cannot crit.
+export type Edge = { bonus?: number; isSure?: boolean; isRanged?: boolean; isWeak?: boolean }
 
-// One swing's damage: a crit doubles, then the weapon's bonus.
+// One swing's damage: a crit doubles, then the weapon's bonus; a weak swing deals 1.
 export function swingDamage(roll: Roll, meta: Meta = NO_META, edge: Edge = {}): number {
+  if (edge.isWeak) return 1
   return (edge.isSure || roll() < critFor(meta) ? 2 : 1) + (edge.bonus ?? 0)
 }
 

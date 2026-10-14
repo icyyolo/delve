@@ -36,7 +36,7 @@ Claude Code (fun first, focus later). Plugin name: `delve` (plugin names may not
   words ÷ 250 wpm ÷ 2, clamped 3 s–2 min; next prompt after it and before torch out → +3 energy.
 
 **Combat** (`hooks/combat.ts`, pure)
-- Attack button costs 1 energy (none → toast). Hit 1, crit 2 (20%). Survivor hits back 50% for its atk.
+- Attack button costs 1 energy (none → weak swing: 1 dmg, no crit, no weapon; mid-turn regen +1/15 s up to 3). Hit 1, crit 2 (20%). Survivor hits back 50% for its atk.
 - Kill: +gold, +1 HP, next floor, new monster from the floor's pool (slime/bat 1+, skeleton 3+,
   wraith 5+, mimic 6+, golem 8+; HP +1 per 2 floors). Biome flips every 5 floors.
 - HP 0 → dead pose + "New run" button. Last blow plays once via SMIL (swing, flinch, counter).
@@ -139,3 +139,4 @@ Claude Code (fun first, focus later). Plugin name: `delve` (plugin names may not
 - 2026-10-14: Marketplace: `.claude-plugin/marketplace.json` in the GitHub repo (owner icyyolo, source "./"); README install is `/plugin install delve --marketplace icyyolo/delve`, source checkout kept as the dev path.
 - 2026-10-14: `/delve haiku [on|off]` (user ask: toggle so the game spends no tokens). Bare `/delve haiku` flips; stored as `haikuOn` (default on) like `enabled`; askHaiku returns undefined first when off, so flavor uses the table and the shop rolls dice. Tests: toggle flips/stores, off = no model call on kill or shop (42 pass).
 - 2026-10-14: Loot more often (user ask: drops were rare). Farm timer re-armed after every tool call, so any 3 s gap farms (was: only before the first call); drop every 4 s (was 5); drops last 7 s (was 3); every kill (hero or ally blow) drops one. Tests: farm-gap test replaces "tool call means no loot", kill-drop test, fade test checks the missed drop by id (43 pass).
+- 2026-10-14: Weak swing + regen (user: running out of energy made the game unplayable). At 0 energy Attack still swings weak: 1 dmg, no crit, no weapon edge (Edge.isWeak in combat.ts), with a "Weak swing, no energy" note; no toast. Mid-turn (mode not idle) energy below 3 regens +1 per 15 s (REGEN_MS/REGEN_CAP, clock.every armed at session.start, not counted in `gained`). Attack label drops the energy cost (pane must not read the purse); shows (free) under a spell. Tests: weak-swing Attack test replaces the no-energy toast test, regen tick + cap + idle, weak portal swing pulls no loot.
